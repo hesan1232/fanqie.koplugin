@@ -2,6 +2,8 @@
 -- Copy this file to config.lua and modify the values below
 
 return {
+    cookie_string = "",
+
     cookies = {
         ["ttwid"] = "",
         ["sessionid"] = "",

@@ -14,8 +14,10 @@ KOReader 插件，用于在电纸书设备上阅读番茄小说。
 
 1. 下载插件压缩包
 2. 将 `fanqie.koplugin` 文件夹复制到 KOReader 的 `plugins/` 目录
-3. 重启 KOReader
-4. 在菜单中找到「番茄书架」入口
+3. 将 `config.example.lua` 复制一份，改名为 `config.lua`
+4. 在 `config.lua` 中配置 `cookie_string`（获取方法见下方）
+5. 重启 KOReader
+6. 在菜单中找到「番茄书架」入口
 
 ## Cookie 获取方式
 
@@ -38,11 +40,14 @@ KOReader 插件，用于在电纸书设备上阅读番茄小说。
 
 ### 配置方法
 
-在 `config.lua` 文件中配置 Cookie：
+1. 将 `config.example.lua` 复制一份，改名为 `config.lua`
+2. 在 `config.lua` 中找到 `cookie_string` 字段
+3. 将从浏览器复制的 Cookie 字符串粘贴进去：
 
 ```lua
-local Config = {
-    cookie_string = "sessionid=xxx; csrfmiddlewaretoken=xxx; ...",
+return {
+    cookie_string = "serial_uuid=xxx; sessionid=xxx; ttwid=xxx; ...",
+    -- ... 其他配置项
 }
 ```
 
