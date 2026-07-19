@@ -19,18 +19,18 @@ KOReader 插件，用于在电纸书设备上阅读番茄小说。
 
 ## Cookie 获取方式
 
-### 方法一：浏览器开发者工具
+### 方法一：浏览器开发者工具（推荐）
 
 1. 打开浏览器（推荐 Chrome 或 Edge）
 2. 访问 [番茄小说网页版](https://fanqie.com)
 3. 登录你的账号
 4. 按下 `F12` 打开开发者工具
-5. 切换到「Application」（应用程序）标签页
-6. 在左侧选择「Cookies」→ `https://fanqie.com`
-7. 找到以下 Cookie 值并复制：
-   - `sessionid`
-   - `csrfmiddlewaretoken`
-8. 将复制的 Cookie 字符串粘贴到插件配置中
+5. 切换到「Network」（网络）标签页
+6. 在页面上点击任意小说或刷新页面，触发网络请求
+7. 在网络请求列表中找到任意一个请求，点击查看详情
+8. 在「Headers」（请求头）中找到 `Cookie` 字段
+9. 右键点击 `Cookie` 值，选择「Copy value」（复制值）
+10. 将复制的完整 Cookie 字符串粘贴到插件配置中
 
 ### 方法二：浏览器扩展
 
