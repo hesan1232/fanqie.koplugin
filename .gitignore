@@ -1,0 +1,11 @@
+# Local config with real Cookie - keep config.example.lua in VCS, ignore config.lua
+config.lua
+
+# KOReader / Lua runtime artifacts
+*.luac
+/.cache/
+/.specs/
+
+# OS files
+.DS_Store
+Thumbs.db
