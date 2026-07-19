@@ -1,5 +1,6 @@
 local ok_gettext, gettext = pcall(require, "gettext")
 local _ = ok_gettext and gettext or function(text) return text end
+local T = _
 
 local ok_UIManager, UIManager = pcall(require, "ui/uimanager")
 local ok_InfoMessage, InfoMessage = pcall(require, "ui/widget/infomessage")
