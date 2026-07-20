@@ -28,8 +28,8 @@ KOReader 插件，用于在电纸书设备上阅读番茄小说。
 3. 登录你的账号
 4. 按下 `F12` 打开开发者工具
 5. 切换到「Network」（网络）标签页
-6. 在页面上点击任意小说或刷新页面，触发网络请求
-7. 在网络请求列表中找到任意一个请求，点击查看详情
+6. 在页面上点击「书架」或刷新页面，触发网络请求
+7. 在网络请求列表中找到 `multidetail` 请求（URL 类似 `https://fanqienovel.com/api/bookshelf/multidetail?a_bogus=...`），点击查看详情
 8. 在「Headers」（请求头）中找到 `Cookie` 字段
 9. 右键点击 `Cookie` 值，选择「Copy value」（复制值）
 10. 将复制的完整 Cookie 字符串粘贴到插件配置中
