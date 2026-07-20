@@ -9,3 +9,6 @@ config.lua
 # OS files
 .DS_Store
 Thumbs.db
+
+# Test files - not included in release
+tests/
