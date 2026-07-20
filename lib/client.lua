@@ -450,9 +450,20 @@ function Client:clear_shelf_cache()
     SHELF_CACHE = {}
 end
 
+local function get_cookie_hash(cookies)
+    local parts = {}
+    for k, v in pairs(cookies) do
+        table.insert(parts, k .. "=" .. v)
+    end
+    table.sort(parts)
+    return table.concat(parts, ";")
+end
+
 function Client:fetch_shelf_detail(force_refresh)
     local now = os.time()
-    local cached = SHELF_CACHE[self.settings:get("username", "") or "default"]
+    local cookies = self.settings:get("cookies", {})
+    local cache_key = next(cookies) and get_cookie_hash(cookies) or "default"
+    local cached = SHELF_CACHE[cache_key]
     if not force_refresh and cached and (now - cached.timestamp) < SHELF_CACHE_TTL then
         return cached.data
     end
@@ -507,7 +518,7 @@ function Client:fetch_shelf_detail(force_refresh)
         end
     end
     
-    SHELF_CACHE[self.settings:get("username", "") or "default"] = {
+    SHELF_CACHE[cache_key] = {
         timestamp = now,
         data = detail_result,
     }

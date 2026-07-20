@@ -481,12 +481,9 @@ function FanQiePlugin:loadConfigFile(silent)
     local ok, config = pcall(dofile, config_path)
     if not ok or type(config) ~= "table" then return end
     
-    local config_loaded = self.settings.store:has("config_loaded") and self.settings.store:readSetting("config_loaded") or false
-    if not config_loaded then
-        pcall(function()
-            self.settings:apply_config(config, { apply_preferences = true })
-        end)
-    end
+    pcall(function()
+        self.settings:apply_config(config, { apply_preferences = true, override_existing = true })
+    end)
 end
 
 function FanQiePlugin:getPluginPath()
