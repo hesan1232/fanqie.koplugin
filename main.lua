@@ -93,6 +93,20 @@ local function display_error(err)
     return text
 end
 
+local function getCurrentChapterIndex()
+    return _state.current_chapter_index or 0
+end
+
+local function getCachedChapters(self, book)
+    if not book then
+        return {}
+    end
+    if not book.cached_chapters then
+        book.cached_chapters = Content.load_cache_index(self.settings, book.book_id) or {}
+    end
+    return book.cached_chapters
+end
+
 local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
@@ -566,14 +580,14 @@ function FanQiePlugin:_cacheShelfPageCovers(books, view, page, first, last, gene
 
     local book = books[index]
     if not book or not book.cover or book.cover == "" then
-        UIManager:scheduleIn(0.03, function()
+        UIManager:scheduleIn(0.1, function()
             self:_cacheShelfPageCovers(books, view, page, first, last, generation, index + 1)
         end)
         return
     end
 
     if book.cover_path then
-        UIManager:scheduleIn(0.03, function()
+        UIManager:scheduleIn(0.1, function()
             self:_cacheShelfPageCovers(books, view, page, first, last, generation, index + 1)
         end)
         return
@@ -601,7 +615,7 @@ function FanQiePlugin:_cacheShelfPageCovers(books, view, page, first, last, gene
             pcall(view.updateItems, view, nil, true)
             view._suppress_page_callback = false
         end
-        UIManager:scheduleIn(0.03, function()
+        UIManager:scheduleIn(0.1, function()
             self:_cacheShelfPageCovers(books, view, page, first, last, generation, index + 1)
         end)
         return
@@ -814,7 +828,7 @@ function FanQiePlugin:showChapterListing(book)
     _state.current_chapters = chapters
 
     local cached = Content.load_cache_index(self.settings, book.book_id)
-    local current_idx = _state.current_chapter_index or 0
+    local current_idx = getCurrentChapterIndex()
 
     local items = {}
     local cached_map = {}
@@ -876,7 +890,7 @@ function FanQiePlugin:showJumpToChapter(book, chapters)
     local dialog
     dialog = InputDialog:new{
         title = _("跳转到章节"),
-        input = tostring(_state.current_chapter_index or 1),
+        input = tostring(getCurrentChapterIndex() > 0 and getCurrentChapterIndex() or 1),
         input_hint = string.format("(1-%d)", total),
         buttons = {
             {
@@ -932,19 +946,8 @@ function FanQiePlugin:navigateToChapter(book, chapters, chapter_index, opts)
     _state.current_chapters = chapters
 
     local item_id = tostring(chapter.itemId)
-    local existing_path = nil
-    
-    if book.cached_chapters then
-        existing_path = book.cached_chapters[item_id]
-    else
-        local cached = _state.getChapterIndexCache(book.book_id)
-        if cached then
-            existing_path = cached[item_id]
-        else
-            book.cached_chapters = Content.load_cache_index(self.settings, book.book_id)
-            existing_path = book.cached_chapters[item_id]
-        end
-    end
+    local cached_chapters = getCachedChapters(self, book)
+    local existing_path = cached_chapters[item_id]
 
     if existing_path and H.file_exists(existing_path) then
         _state.current_chapter_index = chapter_index
@@ -973,8 +976,8 @@ function FanQiePlugin:navigateToChapter(book, chapters, chapter_index, opts)
             return
         end
 
-        book.cached_chapters = book.cached_chapters or {}
-        book.cached_chapters[item_id] = path
+        local cached_chapters = getCachedChapters(self, book)
+        cached_chapters[item_id] = path
 
         _state.current_chapter_index = chapter_index
         _state.pre_download_triggered = false
@@ -1013,11 +1016,10 @@ function FanQiePlugin:showReaderUI(path, chapter)
     end
     _state.current_document_path = path
     
-    if _state.current_book and not _state.current_book.cached_chapters then
+    if _state.current_book then
         UIManager:scheduleIn(1.0, function()
-            local cached = Content.load_cache_index(self.settings, _state.current_book.book_id)
-            if cached and _state.current_book then
-                _state.current_book.cached_chapters = cached
+            if _state.current_book then
+                getCachedChapters(self, _state.current_book)
             end
         end)
     end
@@ -1030,9 +1032,7 @@ function FanQiePlugin:preDownloadChapters(book, chapters, current_index)
 
     if current_index >= total then return end
 
-    if not book.cached_chapters then
-        book.cached_chapters = Content.load_cache_index(self.settings, book.book_id)
-    end
+    local cached_chapters = getCachedChapters(self, book)
 
     UIManager:scheduleIn(1.0, function()
         for offset = 1, pre_download_count do
@@ -1042,7 +1042,7 @@ function FanQiePlugin:preDownloadChapters(book, chapters, current_index)
             local chapter = chapters[target_idx]
             local item_id = tostring(chapter.itemId)
 
-            if book.cached_chapters[item_id] and H.file_exists(book.cached_chapters[item_id]) then
+            if cached_chapters[item_id] and H.file_exists(cached_chapters[item_id]) then
                 Log.debug("pre-download: chapter", target_idx, "already cached")
                 goto continue
             end
@@ -1054,7 +1054,7 @@ function FanQiePlugin:preDownloadChapters(book, chapters, current_index)
             end)
 
             if ok then
-                book.cached_chapters[item_id] = path
+                cached_chapters[item_id] = path
                 Log.info("pre-download: completed chapter", target_idx)
             else
                 Log.warn("pre-download: failed for chapter", target_idx, ":", path)
@@ -1181,7 +1181,7 @@ function FanQiePlugin:onStartOfBook()
         return false
     end
 
-    local current_idx = _state.current_chapter_index or 0
+    local current_idx = getCurrentChapterIndex()
     if current_idx <= 1 then
         UIManager:show(InfoMessage:new{
             text = _("已经是第一章了"),
@@ -1222,7 +1222,7 @@ function FanQiePlugin:onEndOfBook()
         return false
     end
 
-    local current_idx = _state.current_chapter_index or 0
+    local current_idx = getCurrentChapterIndex()
     local chapters = _state.current_chapters
     local book = _state.current_book
 
@@ -1321,7 +1321,7 @@ function FanQiePlugin:onShowFanQieToc()
 
     local book = _state.current_book
     local chapters = _state.current_chapters
-    local current_idx = _state.current_chapter_index or 0
+    local current_idx = getCurrentChapterIndex()
     local cached = _state.getChapterIndexCache(book.book_id)
     if not cached then
         cached = Content.load_cache_index(self.settings, book.book_id)
@@ -1495,7 +1495,7 @@ function FanQiePlugin:doDownloadBook(book, chapters, start_idx, end_idx)
     local total = #selected
     local b = { book_id = book.book_id, title = book.title, author = book.author }
 
-    book.cached_chapters = book.cached_chapters or Content.load_cache_index(self.settings, book.book_id) or {}
+    local cached_chapters = getCachedChapters(self, book)
 
     for i, chapter in ipairs(selected) do
         if dialog:isCanceled() then
@@ -1504,7 +1504,7 @@ function FanQiePlugin:doDownloadBook(book, chapters, start_idx, end_idx)
 
         local item_id = tostring(chapter.itemId)
         
-        if book.cached_chapters[item_id] and H.file_exists(book.cached_chapters[item_id]) then
+        if cached_chapters[item_id] and H.file_exists(cached_chapters[item_id]) then
             skipped_count = skipped_count + 1
             downloaded_count = downloaded_count + 1
             
@@ -1535,7 +1535,7 @@ function FanQiePlugin:doDownloadBook(book, chapters, start_idx, end_idx)
         end)
 
         if ok then
-            book.cached_chapters[item_id] = path
+            cached_chapters[item_id] = path
             downloaded_count = downloaded_count + 1
         else
             failed_count = failed_count + 1
@@ -1668,6 +1668,43 @@ end
 
 function FanQiePlugin:clearAllCache()
     local dir = self.settings:get_download_dir()
+    if not dir then
+        self:showInfo(_("下载目录未设置"))
+        return
+    end
+
+    local ProgressWidget = require("ui/widget/progresswidget")
+    local progress = ProgressWidget:new{
+        width = Screen:getWidth() - 100,
+        height = 8,
+    }
+    local progress_dialog = InfoMessage:new{
+        text = _("正在清除缓存..."),
+        timeout = 0,
+        dismissable = false,
+        icon = "info",
+        additional_widgets = { progress },
+    }
+    UIManager:show(progress_dialog)
+
+    local total_files = 0
+    local function count_files(path)
+        for entry in lfs.dir(path) do
+            if entry ~= "." and entry ~= ".." then
+                local full = path .. "/" .. entry
+                local attr = lfs.attributes(full)
+                if attr then
+                    if attr.mode == "directory" then
+                        count_files(full)
+                    end
+                    total_files = total_files + 1
+                end
+            end
+        end
+    end
+    count_files(dir)
+
+    local removed_count = 0
     local function remove_tree(path)
         for entry in lfs.dir(path) do
             if entry ~= "." and entry ~= ".." then
@@ -1680,12 +1717,19 @@ function FanQiePlugin:clearAllCache()
                     else
                         os.remove(full)
                     end
+                    removed_count = removed_count + 1
+                    if total_files > 0 then
+                        progress:setProgress(removed_count / total_files)
+                    end
+                    UIManager:forceRePaint()
                 end
             end
         end
     end
+
     pcall(remove_tree, dir)
-    self:showInfo(_("缓存已清除"))
+    UIManager:close(progress_dialog)
+    self:showInfo(string.format(_("缓存已清除\n共删除 %d 个文件"), removed_count))
 end
 
 -- ===========================================================================
@@ -1718,10 +1762,7 @@ function FanQiePlugin:openBook(book)
     end
 
     UIManager:scheduleIn(0.1, function()
-        local cached = Content.load_cache_index(self.settings, book.book_id)
-        if cached then
-            book.cached_chapters = cached
-        end
+        getCachedChapters(self, book)
     end)
 
     -- try to get reading progress and find chapter by item_id
