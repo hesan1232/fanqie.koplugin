@@ -482,7 +482,7 @@ function FanQiePlugin:loadConfigFile(silent)
     if not ok or type(config) ~= "table" then return end
     
     pcall(function()
-        self.settings:apply_config(config, { apply_preferences = true, override_existing = true })
+        self.settings:apply_config(config, { apply_preferences = true })
     end)
 end
 
