@@ -9,8 +9,6 @@ return {
         ["sessionid"] = "",
     },
 
-    a_bogus = "",
-
     fanqie_api_endpoint = "http://101.35.133.34:5000",
 
     fanqie_proxy_base = "",

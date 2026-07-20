@@ -30,10 +30,9 @@ KOReader 插件，用于在电纸书设备上阅读番茄小说。
 5. 切换到「Network」（网络）标签页
 6. 在页面上点击「书架」或刷新页面，触发网络请求
 7. 在网络请求列表中找到 `multidetail` 请求（URL 类似 `https://fanqienovel.com/api/bookshelf/multidetail?a_bogus=...`），点击查看详情
-8. 在「Headers」（请求头）中找到 `Cookie` 字段，右键点击值，选择「Copy value」
-9. 在「Headers」中找到「Request URL」，复制 `a_bogus=` 后面的值（如 `Ey4dXcZxMsm1g4oYqwkz9CxdpZY0YW5HgZEzuQUFJtoh`）
-10. 将复制的 Cookie 字符串粘贴到插件配置的 `cookie_string` 字段
-11. 将复制的 `a_bogus` 值粘贴到插件配置的 `a_bogus` 字段
+8. 在「Headers」（请求头）中找到 `Cookie` 字段
+9. 右键点击 `Cookie` 值，选择「Copy value」（复制值）
+10. 将复制的完整 Cookie 字符串粘贴到插件配置中
 
 ### 方法二：浏览器扩展
 

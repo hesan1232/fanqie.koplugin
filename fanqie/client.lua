@@ -506,12 +506,7 @@ function Client:fetch_shelf_detail(force_refresh)
         })
     end
     
-    local a_bogus = self.settings:get("a_bogus", "")
-    local detail_url = FanQie.bookshelf_multidetail_url()
-    if a_bogus ~= "" then
-        detail_url = detail_url .. "?a_bogus=" .. a_bogus
-    end
-    local detail_result = self:post_json(detail_url, { books = books })
+    local detail_result = self:post_json(FanQie.bookshelf_multidetail_url(), { books = books })
     if detail_result and detail_result.data and detail_result.data.detail_list then
         for _, book in ipairs(detail_result.data.detail_list) do
             local progress = progress_map[tostring(book.book_id)]
