@@ -11,6 +11,7 @@ local ok_ConfirmBox, ConfirmBox = pcall(require, "ui/widget/confirmbox")
 local ok_InputDialog, InputDialog = pcall(require, "ui/widget/inputdialog")
 
 local ok_lfs, lfs = pcall(require, "libs/libkoreader-lfs")
+local ok_util, util = pcall(require, "util")
 local ok_H, H = pcall(require, "fanqie.helper")
 local ok_Log, Log = pcall(require, "fanqie.logger")
 local ok_Content, Content = pcall(require, "fanqie.content")
@@ -357,6 +358,7 @@ function Bookshelf:doDownloadBook(book, chapters, start_idx, end_idx)
     UIManager:show(dialog)
 
     local downloaded = 0
+    local failed = 0
     for i = start_idx, end_idx do
         if dialog:isCanceled() then
             break
@@ -369,12 +371,22 @@ function Bookshelf:doDownloadBook(book, chapters, start_idx, end_idx)
         end)
         if ok then
             downloaded = downloaded + 1
+        else
+            failed = failed + 1
+            if Log then Log.warn("chapter download failed:", chapter.title, path) end
         end
         dialog:setProgress(downloaded)
         UIManager:forceRePaint()
+        if i < end_idx then
+            util.sleep(0.5)
+        end
     end
     dialog:close()
-    self:showInfo(string.format(_("下载完成: %d/%d"), downloaded, end_idx - start_idx + 1))
+    local msg = string.format(_("下载完成: %d/%d"), downloaded, end_idx - start_idx + 1)
+    if failed > 0 then
+        msg = msg .. string.format(_(" (失败 %d 章)"), failed)
+    end
+    self:showInfo(msg)
 end
 
 return Bookshelf
