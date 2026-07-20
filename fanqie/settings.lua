@@ -184,6 +184,10 @@ function Settings:apply_config(config, options)
         self:set("cookies", cookies)
     end
     
+    if H.is_str(config.a_bogus) and config.a_bogus ~= "" then
+        self:set("a_bogus", config.a_bogus)
+    end
+    
     if apply_preferences and H.is_tbl(config.sync) then
         local sync = self:get("sync")
         if override_existing then
