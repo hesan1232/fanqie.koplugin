@@ -93,7 +93,7 @@ function Bookshelf:get_shelf(force_refresh)
             local book = {
                 book_id = item.book_id or item.bookId or item.id,
                 title = item.book_name or item.title or item.name or "未知",
-                author = "",
+                author = item.author_name or item.author or "",
                 cover = item.thumb_url or item.coverUrl or item.cover or item.cover_url,
                 desc = item.description or item.desc or item.abstract or "",
                 progress = progress,
@@ -109,38 +109,46 @@ function Bookshelf:get_shelf(force_refresh)
     return books
 end
 
+function Bookshelf:download_covers(books)
+    local cover_cache_dir = self.settings:get("cache_dir") .. "/covers"
+    H.make_dir(cover_cache_dir)
+    for _, book in ipairs(books) do
+        if book.cover and not book.cover_path then
+            local cover_filename = string.gsub(book.title, "[/\\:%*%?\"<>|]", "_") .. ".jpg"
+            local cover_path = cover_cache_dir .. "/" .. cover_filename
+            local ok, _ = pcall(function()
+                local data = self.client:get_binary(book.cover)
+                local file = io.open(cover_path, "wb")
+                if file then
+                    file:write(data)
+                    file:close()
+                    book.cover_path = cover_path
+                end
+            end)
+            if not ok and Log then Log.warn("failed to download cover for:", book.title) end
+        end
+    end
+end
+
 function Bookshelf:showBookList(books)
     table.sort(books, function(a, b)
         return (a.progress or 0) < (b.progress or 0)
     end)
 
-    local items = {}
-    for _, book in ipairs(books) do
-        local progress_text = ""
-        if book.progress then
-            progress_text = string.format("%.1f%%", book.progress * 100)
-        end
-        local item = {
-            text = book.title,
-            mandatory = progress_text,
-            callback = function()
-                self:showBookDetail(book)
-            end,
-        }
-        table.insert(items, item)
-    end
+    self:download_covers(books)
 
-    self.book_list_menu = Menu:new{
+    local ShelfView = require("fanqie.shelf_view")
+    self.book_list_menu = ShelfView.show{
         title = _("我的书架"),
-        items = items,
-        is_borderless = true,
-        width = Screen:getWidth() - 40,
-        height = Screen:getHeight() - 100,
-        close_callback = function()
+        books = books,
+        show_covers = true,
+        on_select = function(book)
+            self:showBookDetail(book)
+        end,
+        on_close = function()
             self.book_list_menu = nil
         end,
     }
-    UIManager:show(self.book_list_menu)
 end
 
 function Bookshelf:showBookDetail(book)
@@ -350,21 +358,29 @@ function Bookshelf:showDownloadRangeDialog(book, chapters)
 end
 
 function Bookshelf:doDownloadBook(book, chapters, start_idx, end_idx)
-    local DownloadDialog = require("fanqie.download_dialog")
-    local dialog = DownloadDialog:new{
-        book_title = book.title,
-        total = end_idx - start_idx + 1,
+    local DownloadProgress = require("fanqie.download_progress")
+    local dialog = DownloadProgress:new{
+        title = string.format(_("下载 %s"), book.title),
     }
-    UIManager:show(dialog)
+    dialog:show()
 
     local downloaded = 0
     local failed = 0
+    local total = end_idx - start_idx + 1
+    dialog:setState{stage = "prepare", current = 0, total = total}
+
     for i = start_idx, end_idx do
         if dialog:isCanceled() then
             break
         end
         local chapter = chapters[i]
-        dialog:setCurrent(chapter.title or string.format(_("第%d章"), i))
+        local chapter_title = chapter.title or string.format(_("第%d章"), i)
+        dialog:setState{
+            stage = "content",
+            current = downloaded,
+            total = total,
+            chapter = chapter_title,
+        }
         local ok, path = pcall(function()
             local b = { book_id = book.book_id, title = book.title, author = book.author }
             return require("fanqie.content").fetch_chapter_html(self.client, self.settings, b, chapter)
@@ -373,16 +389,20 @@ function Bookshelf:doDownloadBook(book, chapters, start_idx, end_idx)
             downloaded = downloaded + 1
         else
             failed = failed + 1
-            if Log then Log.warn("chapter download failed:", chapter.title, path) end
+            if Log then Log.warn("chapter download failed:", chapter_title, path) end
         end
-        dialog:setProgress(downloaded)
-        UIManager:forceRePaint()
+        dialog:setState{
+            stage = "content",
+            current = downloaded,
+            total = total,
+            chapter = chapter_title,
+        }
         if i < end_idx then
             util.sleep(0.5)
         end
     end
     dialog:close()
-    local msg = string.format(_("下载完成: %d/%d"), downloaded, end_idx - start_idx + 1)
+    local msg = string.format(_("下载完成: %d/%d"), downloaded, total)
     if failed > 0 then
         msg = msg .. string.format(_(" (失败 %d 章)"), failed)
     end
