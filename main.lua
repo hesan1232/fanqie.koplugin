@@ -45,6 +45,8 @@ local _ = ok_gettext and gettext or function(text) return text end
 local T_util = safe_require("ffi/util")
 local T = T_util and T_util.template or nil
 
+local util = safe_require("util")
+
 -- Local libs
 local Settings = safe_require("fanqie.settings")
 
@@ -54,7 +56,7 @@ local H = safe_require("fanqie.helper")
 
 local Content = safe_require("fanqie.content")
 
-local DownloadDialog = safe_require("fanqie.download_dialog")
+local DownloadProgress = safe_require("fanqie.download_progress")
 
 local FanQie = safe_require("fanqie.fanqie")
 
@@ -689,36 +691,24 @@ function FanQiePlugin:showChapterListing(book)
     _state.current_book = book
     _state.current_chapters = chapters
 
-    -- Load cache index to mark cached chapters
     local cached = Content.load_cache_index(self.settings, book.book_id)
-    local current_idx = _state.current_chapter_index
+    local current_idx = _state.current_chapter_index or 0
 
     local items = {}
-
-    table.insert(items, {
-        text = _("↻ 刷新目录"),
-        callback = function()
-            if _state.cached_directory and _state.cached_directory[book.book_id] then
-                _state.cached_directory[book.book_id] = nil
-            end
-            self:showChapterListing(book)
-        end,
-    })
-
-    table.insert(items, {
-        text = _("→ 跳转到第N章"),
-        callback = function()
-            self:showJumpToChapter(book, chapters)
-        end,
-    })
+    local cached_map = {}
+    if cached then
+        for item_id, _ in pairs(cached) do
+            cached_map[item_id] = true
+        end
+    end
 
     for i, chapter in ipairs(chapters) do
         local title = chapter.title or ("Chapter " .. tostring(i))
         local prefix = ""
         if i == current_idx then
-            prefix = "▶ "  -- current reading position
-        elseif cached and cached[tostring(chapter.itemId)] then
-            prefix = "✓ "  -- cached
+            prefix = "▶ "
+        elseif cached_map[tostring(chapter.itemId)] then
+            prefix = "✓ "
         end
         table.insert(items, {
             text = prefix .. title,
@@ -728,23 +718,30 @@ function FanQiePlugin:showChapterListing(book)
         })
     end
 
+    local items_per_page = 12
+    local initial_page = 1
+    
     if current_idx > 0 then
         items.current = current_idx
+        initial_page = math.ceil(current_idx / items_per_page)
     end
     
     local chapter_menu = Menu:new{
         title = string.format("%s - 目录", book.title or book.book_id),
         item_table = items,
-        items_per_page = 12,
+        items_per_page = items_per_page,
         is_borderless = true,
         is_popout = false,
         close_callback = function()
-            -- clear active_menu reference and keep _current_book / _current_chapters for reader navigation
             if _state.active_menu == chapter_menu then
                 _state.active_menu = nil
             end
         end,
     }
+    
+    if initial_page > 1 then
+        chapter_menu:onGotoPage(initial_page)
+    end
     
     _state.active_menu = chapter_menu
     UIManager:show(chapter_menu)
@@ -1365,39 +1362,91 @@ function FanQiePlugin:doDownloadBook(book, chapters, start_idx, end_idx)
         table.insert(selected, chapters[i])
     end
 
-    local dialog = DownloadDialog:new(nil, T(_("下载 %s"), book.title or book.book_id))
+    local dialog = DownloadProgress:new{
+        title = T(_("下载 %s"), book.title or book.book_id),
+    }
     dialog:show()
 
     local downloaded_count = 0
+    local failed_count = 0
+    local skipped_count = 0
+    local total = #selected
     local b = { book_id = book.book_id, title = book.title, author = book.author }
 
-    book.cached_chapters = book.cached_chapters or {}
+    book.cached_chapters = book.cached_chapters or Content.load_cache_index(self.settings, book.book_id) or {}
 
     for i, chapter in ipairs(selected) do
-        if dialog:is_cancelled() then
+        if dialog:isCanceled() then
             break
         end
 
-        local progress = (i - 1) / #selected
-        local status = string.format(_("第 %d/%d 章: %s"), i, #selected, chapter.title or "")
-        dialog:update(progress, status)
+        local item_id = tostring(chapter.itemId)
+        
+        if book.cached_chapters[item_id] and H.file_exists(book.cached_chapters[item_id]) then
+            skipped_count = skipped_count + 1
+            downloaded_count = downloaded_count + 1
+            
+            local chapter_title = chapter.title or string.format(_("第%d章"), i)
+            dialog:setState{
+                stage = "content",
+                current = downloaded_count,
+                total = total,
+                chapter = chapter_title,
+            }
+            
+            if i < total then
+                util.sleep(0.1)
+            end
+            goto continue
+        end
+
+        local chapter_title = chapter.title or string.format(_("第%d章"), i)
+        dialog:setState{
+            stage = "content",
+            current = downloaded_count,
+            total = total,
+            chapter = chapter_title,
+        }
 
         local ok, path = pcall(function()
             return Content.fetch_chapter_html(self.client, self.settings, b, chapter)
         end)
 
         if ok then
-            book.cached_chapters[tostring(chapter.itemId)] = path
+            book.cached_chapters[item_id] = path
             downloaded_count = downloaded_count + 1
+        else
+            failed_count = failed_count + 1
+            if Log then Log.warn("chapter download failed:", chapter_title, path) end
         end
+
+        dialog:setState{
+            stage = "content",
+            current = downloaded_count,
+            total = total,
+            chapter = chapter_title,
+        }
+
+        if i < total then
+            util.sleep(0.5)
+        end
+        
+        ::continue::
     end
 
     dialog:close()
 
-    if dialog:is_cancelled() and downloaded_count < #selected then
-        self:showInfo(T(_("已取消下载\n已保存 %1/%2 章"), downloaded_count, #selected))
+    if dialog:isCanceled() and downloaded_count < total then
+        self:showInfo(T(_("已取消下载\n已保存 %1/%2 章"), downloaded_count, total))
     else
-        self:showInfo(T(_("下载完成!\n共 %1 章"), downloaded_count))
+        local msg = T(_("下载完成!\n共 %1/%2 章"), downloaded_count, total)
+        if skipped_count > 0 then
+            msg = msg .. T(_(" (跳过已缓存 %d 章)"), skipped_count)
+        end
+        if failed_count > 0 then
+            msg = msg .. T(_(" (失败 %d 章)"), failed_count)
+        end
+        self:showInfo(msg)
     end
 end
 
