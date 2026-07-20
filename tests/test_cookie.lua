@@ -1,6 +1,6 @@
 local TestUtils = require("tests.test_utils")
 
-local Cookie = require("lib.cookie")
+local Cookie = require("fanqie.cookie")
 
 local tests = {
     {

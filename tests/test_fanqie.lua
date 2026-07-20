@@ -6,7 +6,7 @@ local function trim(str)
 end
 string.trim = trim
 
-local FanQie = require("lib.fanqie")
+local FanQie = require("fanqie.fanqie")
 
 local tests = {
     {

@@ -1,4 +1,4 @@
-local H = require("lib.helper")
+local H = require("fanqie.helper")
 
 local FanQie = {}
 

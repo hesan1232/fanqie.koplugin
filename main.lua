@@ -46,24 +46,24 @@ local T_util = safe_require("ffi/util")
 local T = T_util and T_util.template or nil
 
 -- Local libs
-local Settings = safe_require("lib.settings")
+local Settings = safe_require("fanqie.settings")
 
-local Client = safe_require("lib.client")
+local Client = safe_require("fanqie.client")
 
-local H = safe_require("lib.helper")
+local H = safe_require("fanqie.helper")
 
-local Content = safe_require("lib.content")
+local Content = safe_require("fanqie.content")
 
-local DownloadDialog = safe_require("lib.download_dialog")
+local DownloadDialog = safe_require("fanqie.download_dialog")
 
-local FanQie = safe_require("lib.fanqie")
+local FanQie = safe_require("fanqie.fanqie")
 
-local Log = safe_require("lib.logger")
+local Log = safe_require("fanqie.logger")
 
 local Patches = safe_require("patches.core")
 
-local Bookshelf = safe_require("lib.bookshelf")
-local ReaderNavigation = safe_require("lib.reader_navigation")
+local Bookshelf = safe_require("fanqie.bookshelf")
+local ReaderNavigation = safe_require("fanqie.reader_navigation")
 
 local unpack_args = unpack or table.unpack
 
@@ -100,7 +100,7 @@ local FanQiePlugin = WidgetContainer:extend{
 
 -- Shared state across FileManager and ReaderUI instances
 -- (KOReader creates separate WidgetContainer instances for each)
-local ok_state, _state = pcall(require, "lib.state")
+local ok_state, _state = pcall(require, "fanqie.state")
 if not ok_state then
     _state = {
         current_book = nil,

@@ -1,7 +1,7 @@
 local ltn12 = require("ltn12")
-local Cookie = require("lib.cookie")
-local FanQie = require("lib.fanqie")
-local H = require("lib.helper")
+local Cookie = require("fanqie.cookie")
+local FanQie = require("fanqie.fanqie")
+local H = require("fanqie.helper")
 
 local ok_https, https = pcall(require, "ssl.https")
 local ok_http, http = pcall(require, "socket.http")

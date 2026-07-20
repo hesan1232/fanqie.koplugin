@@ -1,7 +1,7 @@
 local DataStorage = require("datastorage")
 local LuaSettings = require("luasettings")
 local lfs = require("libs/libkoreader-lfs")
-local H = require("lib.helper")
+local H = require("fanqie.helper")
 
 local Settings = {}
 Settings.__index = Settings

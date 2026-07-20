@@ -1,6 +1,6 @@
 local TestUtils = require("tests.test_utils")
 
-local Crypto = require("lib.crypto")
+local Crypto = require("fanqie.crypto")
 
 local tests = {
     {

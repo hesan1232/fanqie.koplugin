@@ -2,7 +2,7 @@ local function rshift(n, k)
     return math.floor(n / (2 ^ k))
 end
 
-local FanQie = require("lib.fanqie")
+local FanQie = require("fanqie.fanqie")
 
 local ok_logger, logger = pcall(require, "logger")
 if not ok_logger then
@@ -10,7 +10,7 @@ if not ok_logger then
 end
 local LOG_MODULE = "[FanQie]"
 
-local H = require("lib.helper")
+local H = require("fanqie.helper")
 
 local Content = {}
 

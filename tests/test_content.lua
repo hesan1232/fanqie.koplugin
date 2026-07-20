@@ -1,5 +1,5 @@
 local TestUtils = require("test_utils")
-local Content = require("lib.content")
+local Content = require("fanqie.content")
 
 local tests = {
     {

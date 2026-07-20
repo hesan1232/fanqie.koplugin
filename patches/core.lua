@@ -2,7 +2,7 @@ local M = {
     _mark = "_fanqie_patch",
 }
 
-local H = require("lib.helper")
+local H = require("fanqie.helper")
 
 M.verifyPatched = function()
     local ReaderToc = require("apps/reader/modules/readertoc")

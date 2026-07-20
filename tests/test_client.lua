@@ -132,7 +132,7 @@ local tests = {
     {
         name = "node_cache mark and check",
         func = function()
-            local Client = require("lib.client")
+            local Client = require("fanqie.client")
             local mock_settings = {
                 get = function(_, key) return {} end,
                 set = function() end,
@@ -154,7 +154,7 @@ local tests = {
     {
         name = "get_available_endpoints filters failed",
         func = function()
-            local Client = require("lib.client")
+            local Client = require("fanqie.client")
             local mock_settings = {
                 get = function(_, key) return {} end,
                 set = function() end,
@@ -172,7 +172,7 @@ local tests = {
     {
         name = "has_third_party_endpoints with endpoints",
         func = function()
-            local Client = require("lib.client")
+            local Client = require("fanqie.client")
             -- Clear NODE_CACHE to avoid contamination from previous tests
             for k in pairs(Client.node_cache or {}) do
                 Client.node_cache[k] = nil
@@ -190,7 +190,7 @@ local tests = {
     {
         name = "has_third_party_endpoints without endpoints",
         func = function()
-            local Client = require("lib.client")
+            local Client = require("fanqie.client")
             local mock_settings = {
                 get = function(_, key) return {} end,
                 set = function() end,
@@ -204,7 +204,7 @@ local tests = {
     {
         name = "parse_reader_page with NEXT_DATA",
         func = function()
-            local Client = require("lib.client")
+            local Client = require("fanqie.client")
             local mock_settings = {
                 get = function(_, key) return {} end,
                 set = function() end,
@@ -222,7 +222,7 @@ local tests = {
     {
         name = "parse_reader_page with INITIAL_STATE",
         func = function()
-            local Client = require("lib.client")
+            local Client = require("fanqie.client")
             local mock_settings = {
                 get = function(_, key) return {} end,
                 set = function() end,
@@ -240,7 +240,7 @@ local tests = {
     {
         name = "extract_chapter_content_from_reader various paths",
         func = function()
-            local Client = require("lib.client")
+            local Client = require("fanqie.client")
             local mock_settings = {
                 get = function(_, key) return {} end,
                 set = function() end,

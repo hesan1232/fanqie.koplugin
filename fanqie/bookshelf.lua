@@ -349,7 +349,7 @@ function Bookshelf:showDownloadRangeDialog(book, chapters)
 end
 
 function Bookshelf:doDownloadBook(book, chapters, start_idx, end_idx)
-    local DownloadDialog = require("lib.download_dialog")
+    local DownloadDialog = require("fanqie.download_dialog")
     local dialog = DownloadDialog:new{
         book_title = book.title,
         total = end_idx - start_idx + 1,
@@ -365,7 +365,7 @@ function Bookshelf:doDownloadBook(book, chapters, start_idx, end_idx)
         dialog:setCurrent(chapter.title or string.format(_("第%d章"), i))
         local ok, path = pcall(function()
             local b = { book_id = book.book_id, title = book.title, author = book.author }
-            return require("lib.content").fetch_chapter_html(self.client, self.settings, b, chapter)
+            return require("fanqie.content").fetch_chapter_html(self.client, self.settings, b, chapter)
         end)
         if ok then
             downloaded = downloaded + 1
