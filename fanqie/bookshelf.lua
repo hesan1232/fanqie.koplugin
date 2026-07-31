@@ -401,7 +401,11 @@ function Bookshelf:doDownloadBook(book, chapters, start_idx, end_idx)
         }
         local ok, path = pcall(function()
             local b = { book_id = book.book_id, title = book.title, author = book.author }
-            return require("fanqie.content").fetch_chapter_html(self.client, self.settings, b, chapter)
+            -- 段评模式：传递 review=true
+            local ok_state, st = pcall(require, "fanqie.state")
+            local review_enabled = ok_state and st and st.isReviewEnabled and st.isReviewEnabled() or false
+            local fetch_opts = review_enabled and { review = true } or nil
+            return require("fanqie.content").fetch_chapter_html(self.client, self.settings, b, chapter, fetch_opts)
         end)
         if ok then
             downloaded = downloaded + 1

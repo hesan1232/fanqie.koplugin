@@ -1,16 +1,11 @@
 -- FanQie Plugin Logger
--- Wraps KOReader's logger with configurable debug level and file output.
+-- Only writes to fanqie.log file.
 -- Usage:
 --   local Log = require("lib.logger")
 --   Log.debug("some", "details")  -- only shown when developer_logs=true
 --   Log.info("always shown")
 --   Log.warn("warning")
 --   Log.error("error")
-
-local ok_ko_logger, ko_logger = pcall(require, "logger")
-if not ok_ko_logger then
-    ko_logger = nil
-end
 
 local Log = {}
 local LOG_MODULE = "[FanQie]"
@@ -37,6 +32,15 @@ local function is_debug_enabled()
     if not _settings then return false end
     local advanced = _settings:get("advanced", {})
     return advanced.developer_logs == true
+end
+
+-- When debug logging is OFF: only WARN and ERROR
+-- When debug logging is ON: all levels including INFO and DEBUG
+local function should_log(level)
+    if level == "WARN" or level == "ERROR" then
+        return true
+    end
+    return is_debug_enabled()
 end
 
 -- Rotate log file if it exceeds MAX_LOG_SIZE
@@ -79,35 +83,24 @@ local function write_to_file(level, message)
 end
 
 function Log.debug(...)
-    if not is_debug_enabled() then return end
+    if not should_log("DEBUG") then return end
     local message = format_args(...)
-    if koLogger then
-        koLogger.debug(LOG_MODULE, message)
-    end
     write_to_file("DEBUG", message)
 end
 
 function Log.info(...)
+    if not should_log("INFO") then return end
     local message = format_args(...)
-    if koLogger then
-        koLogger.info(LOG_MODULE, message)
-    end
     write_to_file("INFO", message)
 end
 
 function Log.warn(...)
     local message = format_args(...)
-    if koLogger then
-        koLogger.warn(LOG_MODULE, message)
-    end
     write_to_file("WARN", message)
 end
 
 function Log.error(...)
     local message = format_args(...)
-    if koLogger then
-        koLogger.err(LOG_MODULE, message)
-    end
     write_to_file("ERROR", message)
 end
 

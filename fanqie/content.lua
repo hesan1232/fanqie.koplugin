@@ -4,11 +4,20 @@ end
 
 local FanQie = require("fanqie.fanqie")
 
-local ok_logger, logger = pcall(require, "logger")
+local ok_logger, logger = pcall(require, "fanqie.logger")
 if not ok_logger then
     logger = nil
 end
 local LOG_MODULE = "[FanQie]"
+
+-- High-resolution wall-clock timer (ms). Falls back to os.clock if no socket.
+local ok_socket_perf, socket_perf = pcall(require, "socket")
+local function now_ms()
+    if ok_socket_perf and socket_perf and socket_perf.gettime then
+        return socket_perf.gettime() * 1000
+    end
+    return os.clock() * 1000
+end
 
 local H = require("fanqie.helper")
 
@@ -74,7 +83,7 @@ function Content.save_cache_index(settings, book_id, cached_chapters)
 end
 
 function Content.load_cache_index(settings, book_id)
-    local ok_state, _state = pcall(require, "lib.state")
+    local ok_state, _state = pcall(require, "fanqie.state")
     if ok_state and _state then
         local cached = _state.getChapterIndexCache(book_id)
         if cached then
@@ -113,6 +122,57 @@ end
 function Content.verify_cache_path(path)
     if not path then return false end
     return H.file_exists(path)
+end
+
+-- Catalog (chapter directory) persistence: saves the full chapter list
+-- so we don't have to re-fetch it from the server every time.
+function Content.save_catalog_cache(settings, book_id, chapters)
+    local dir = Content.book_cache_dir(settings, book_id)
+    H.make_dir(dir)
+    local path = H.join_path(dir, "catalog_cache.lua")
+    -- Serialize chapters as a Lua table. Only keep fields needed for display.
+    local parts = { "return {" }
+    for i, ch in ipairs(chapters or {}) do
+        local item_id = tostring(ch.itemId or ch.item_id or "")
+        local title = tostring(ch.title or "")
+        -- Escape quotes/backslashes in title
+        title = title:gsub("\\", "\\\\"):gsub('"', '\\"')
+        table.insert(parts, string.format('  { itemId = "%s", title = "%s" },', item_id, title))
+    end
+    table.insert(parts, "}")
+    H.write_file(path, table.concat(parts, "\n"))
+end
+
+function Content.load_catalog_cache(settings, book_id)
+    local dir = Content.book_cache_dir(settings, book_id)
+    local path = H.join_path(dir, "catalog_cache.lua")
+    if not H.file_exists(path) then
+        return nil
+    end
+    local ok, catalog = pcall(dofile, path)
+    if not ok or not H.is_tbl(catalog) then
+        return nil
+    end
+    return catalog
+end
+
+function Content.clear_catalog_cache(settings, book_id)
+    local dir = Content.book_cache_dir(settings, book_id)
+    local path = H.join_path(dir, "catalog_cache.lua")
+    if H.file_exists(path) then
+        os.remove(path)
+    end
+end
+
+-- Find a chapter file directly from filesystem, even if cache index is missing
+function Content.find_chapter_file(settings, book_id, item_id)
+    local dir = Content.book_cache_dir(settings, book_id)
+    if not dir then return nil end
+    local expected_path = dir .. "/chapter_" .. tostring(item_id) .. ".html"
+    if H.file_exists(expected_path) then
+        return expected_path
+    end
+    return nil
 end
 
 function Content.book_resolved_dir(settings, book_id, book)
@@ -184,14 +244,32 @@ end
 
 local function body_fragment(xhtml)
     xhtml = tostring(xhtml or "")
-    local body = xhtml:match("<body[^>]->([^<]-)</body>")
-        or xhtml:match("<body[^>]->(.*)")
-    if body then
-        return body
-    end
+    -- Remove XML declaration and DOCTYPE
     xhtml = xhtml:gsub("<%?xml.-%?>", "")
     xhtml = xhtml:gsub("<!DOCTYPE.-%>", "")
-    return xhtml
+    xhtml = xhtml:gsub("<!%[CDATA%[.-%]%]>", "")
+
+    -- Extract body content between <body> and </body>
+    local body = xhtml:match("<body[^>]->([%s%S]--)</body>")
+    if not body then
+        body = xhtml:match("<body[^>]->(.*)")
+    end
+    if not body then
+        body = xhtml
+    end
+
+    -- Remove <script>, <style>, <header>, <nav> elements but keep <img>
+    body = body:gsub("<script[^>]->[%s%S]-</script>", "")
+    body = body:gsub("<style[^>]->[%s%S]-</style>", "")
+    body = body:gsub("<header[^>]->[%s%S]-</header>", "")
+    body = body:gsub("<nav[^>]->[%s%S]-</nav>", "")
+    body = body:gsub("<!--[%s%S]--->", "")
+
+    -- Handle self-closing tags
+    body = body:gsub("<br%s*/?>", "<br/>")
+    body = body:gsub("<img([^>]-)/>", "<img%1>")
+
+    return body
 end
 
 local PUA_CODE = { { 58344, 58715 }, { 58345, 58716 } }
@@ -304,9 +382,17 @@ function Content.clean_chapter_content(raw_content, title)
 
     local content = raw_content
 
+    -- 移除不可见字符（零宽空格、BOM、软连字符、双向控制符等，晴天/大灰狼广告中大量掺杂）
+    -- U+200B-200F, U+2028-202E, U+FEFF, U+00AD
+    content = content:gsub("\226\128[\139\142\143\144\145\146\147\148\149\150\151\152\153\154\155\156\157\158]", "")
+    content = content:gsub("\194\173", "")  -- U+00AD 软连字符
+    content = content:gsub("\239\187\191", "")  -- U+FEFF BOM
+
+    -- Remove unwanted elements but preserve <img> and <comment> tags
     content = content:gsub("<header[^>]->[%s%S]-</header>", "")
     content = content:gsub("<script[^>]->[%s%S]-</script>", "")
     content = content:gsub("<style[^>]->[%s%S]-</style>", "")
+    content = content:gsub("<nav[^>]->[%s%S]-</nav>", "")
     content = content:gsub("<!--[%s%S]--->", "")
 
     local body_match = content:match("<body[^>]->([%s%S]-)</body>")
@@ -314,35 +400,251 @@ function Content.clean_chapter_content(raw_content, title)
         content = body_match
     end
 
+    -- 移除末尾广告：晴天广告以 📣 开头，大灰狼以 "本书源" 开头
+    -- 广告可能跨多行，从起始标志到内容结尾全部删除
+    -- 📣 = U+1F4E3 = F0 9F 93 A3
+    local ad_start = nil
+    local qt_ad = content:find("\240\159\147\163", 1, true)  -- 📣
+    local dl_ad = content:find("本书源", 1, true)
+    if qt_ad then ad_start = qt_ad end
+    if dl_ad and (not ad_start or dl_ad < ad_start) then ad_start = dl_ad end
+    if ad_start then
+        content = content:sub(1, ad_start - 1)
+    end
+
+    -- ========================================================================
+    -- 段评气泡生成（全局占位符方案，参考 kindle-forge 的全局替换）
+    -- <comment> 标签可能在 <p> 内部（与文字内联）或外部（段落之间）。
+    -- 旧方案只在段落之间查找 <comment>，<p> 内部的 <comment> 会被
+    -- txt:gsub("<[^>]+>","") 当作普通标签删除，导致气泡永远不出现。
+    -- 新方案：先全局把 <comment> 替换成占位符 \001CMTN\001，占位符不含
+    -- <>&" 等特殊字符，能安全穿过 strip_tags / decode_entities / trim /
+    -- xml_escape 全流程；最后统一还原为气泡 HTML。
+    -- ========================================================================
+    local comment_bubbles = {}   -- 占位符序号 → 气泡 HTML
+    local comment_count = 0
+    local comment_samples = {}  -- 保留前 3 个 <comment> 原文用于日志诊断
+
+    -- 1. 匹配带 count 的 <comment ident="..." count="..." />
+    content = content:gsub('<comment%s+ident="([^"]*)"%s+count="([^"]*)"%s*/?>', function(ident, count)
+        comment_count = comment_count + 1
+        local idx = comment_count
+        local n = tonumber(count) or 0
+        if #comment_samples < 3 then
+            table.insert(comment_samples, string.format('<comment ident="%s" count="%s" />', ident:sub(1, 80), count))
+        end
+        -- 用 <a href="fanqie-para:N"> 代替 <span onclick>，因为 KOReader 的 crengine
+        -- 不支持 JavaScript onclick 事件，但支持 <a> 链接点击 → 触发 onGotoLink 事件
+        -- href 中的 N 是段评在 para_reviews 表中的序号，插件通过 onGotoLink 拦截
+        comment_bubbles[idx] = string.format(
+            '<a class="para-comment" href="fanqie-para:%d">%d</a>',
+            idx, n
+        )
+        return "\001CMT" .. idx .. "\001"
+    end)
+    -- 2. 匹配不带 count 的 <comment ident="..." />
+    content = content:gsub('<comment%s+ident="([^"]*)"%s*/?>', function(ident)
+        comment_count = comment_count + 1
+        local idx = comment_count
+        if #comment_samples < 3 then
+            table.insert(comment_samples, string.format('<comment ident="%s" />', ident:sub(1, 80)))
+        end
+        comment_bubbles[idx] = string.format(
+            '<a class="para-comment" href="fanqie-para:%d">0</a>',
+            idx
+        )
+        return "\001CMT" .. idx .. "\001"
+    end)
+
+    if logger then
+        logger.info(LOG_MODULE, "[段评] clean_chapter_content: comment_count=" .. comment_count
+            .. " title=" .. tostring(title or ""))
+        if #comment_samples > 0 then
+            logger.info(LOG_MODULE, "[段评] <comment> 样本:\n" .. table.concat(comment_samples, "\n"))
+        end
+    end
+
+    -- 辅助函数：从文本中提取占位符（用于段落之间的 <comment>，已变成占位符）
+    -- 占位符 \001CMTN\001 不含 <>&" ，不会被 strip_tags 删除
+    local function extract_placeholders(text)
+        local phs = {}
+        for ph in text:gmatch("\001CMT%d+\001") do
+            table.insert(phs, ph)
+        end
+        return table.concat(phs, "")
+    end
+
+    -- Extract paragraphs, preserving inline images IN THEIR ORIGINAL ORDER.
+    -- 段落之间的占位符（原 <comment>）提取后追加到段落末尾。
+    -- 段落内部的占位符随文字流自然保留，最终还原为内联气泡。
     local paragraphs = {}
     local para_regex = "<p[^>]->([%s%S]-)</p>"
     local pos = 1
+
     while true do
         local start_pos, end_pos, inner = content:find(para_regex, pos)
-        if not start_pos then break end
-        inner = inner:gsub("<br%s*/?>", "\n"):gsub("<[^>]+>", "")
-        inner = Content.decode_html_entities(inner)
-        local trimmed = H.trim(inner)
-        if trimmed ~= "" then
-            table.insert(paragraphs, "<p>" .. xml_escape(trimmed) .. "</p>")
+        if not start_pos then
+            -- 没有更多 <p> 标签，处理最后一段残留内容中的占位符
+            local tail = content:sub(pos)
+            local ph_html = extract_placeholders(tail)
+            if ph_html ~= "" then
+                if #paragraphs > 0 then
+                    paragraphs[#paragraphs] = paragraphs[#paragraphs] .. ph_html
+                else
+                    table.insert(paragraphs, "<p>" .. ph_html .. "</p>")
+                end
+            end
+            break
+        end
+
+        -- 处理 <p> 标签之前的内容（段落之间的占位符）
+        local before_text = content:sub(pos, start_pos - 1)
+        local ph_html = extract_placeholders(before_text)
+
+        -- Walk through the paragraph, interleaving text snippets with images
+        -- in exactly the order they appear in the source.
+        -- 注意：段落内部的占位符 \001CMTN\001 是纯文本，不会被
+        -- gsub("<[^>]+>","") 删除，会随文字一起进入 parts，最终内联显示。
+        local parts = {}
+        local scan = 1
+        local inner_len = #inner
+        while scan <= inner_len do
+            -- Try to find the next <img ...> or <img .../> tag
+            local img_start, img_end, img_tag = inner:find('(<[iI][mM][gG][^>]*/?>)', scan)
+            local br_start, br_end, br_tag = inner:find('(<br%s*/?>)', scan)
+            local next_tag_start, next_tag_end, next_tag = nil, nil, nil
+            local is_img = false
+            local is_br = false
+            if img_start and (not br_start or img_start <= br_start) then
+                next_tag_start, next_tag_end, next_tag = img_start, img_end, img_tag
+                is_img = true
+            elseif br_start then
+                next_tag_start, next_tag_end, next_tag = br_start, br_end, br_tag
+                is_br = true
+            end
+
+            if next_tag_start then
+                -- Text before this tag
+                if next_tag_start > scan then
+                    local txt = inner:sub(scan, next_tag_start - 1)
+                    txt = txt:gsub("<[^>]+>", "")
+                    txt = Content.decode_html_entities(txt)
+                    local trimmed = H.trim(txt)
+                    if trimmed ~= "" then
+                        table.insert(parts, xml_escape(trimmed))
+                    end
+                end
+                if is_img then
+                    table.insert(parts, next_tag)
+                elseif is_br then
+                    table.insert(parts, "<br/>")
+                end
+                scan = next_tag_end + 1
+            else
+                -- No more tags; tail text
+                local txt = inner:sub(scan)
+                txt = txt:gsub("<[^>]+>", "")
+                txt = Content.decode_html_entities(txt)
+                local trimmed = H.trim(txt)
+                if trimmed ~= "" then
+                    table.insert(parts, xml_escape(trimmed))
+                end
+                break
+            end
+        end
+
+        local para_content = table.concat(parts, "\n")
+        if para_content ~= "" then
+            -- 检测是否为纯图片段落（去除 img 标签后无文字内容）
+            -- 纯图片段落直接输出 img 标签本身，去掉外层 p，避免 text-indent 缩进
+            local stripped = para_content:gsub("<[iI][mM][gG][^>]*/?>", "")
+            stripped = stripped:gsub("%s", "")
+            local is_img_only = stripped == "" and para_content:find("<[iI][mM][gG]")
+            if is_img_only then
+                table.insert(paragraphs, para_content .. ph_html)
+            else
+                table.insert(paragraphs, "<p>" .. para_content .. "</p>" .. ph_html)
+            end
+        elseif ph_html ~= "" then
+            table.insert(paragraphs, "<p>" .. ph_html .. "</p>")
         end
         pos = end_pos + 1
     end
 
+    -- If no <p> tags found, extract text and images directly.
+    -- We walk the content linearly, splitting on newlines AND <img> tags,
+    -- so images appear in their original position relative to the text.
     if #paragraphs == 0 then
-        local plain = content:gsub("<[^>]+>", "")
-        plain = Content.decode_html_entities(plain)
         local lines = {}
-        for line in plain:gmatch("[^\n]+") do
-            line = H.trim(line)
-            if line ~= "" then
-                table.insert(lines, "<p>" .. xml_escape(line) .. "</p>")
+        local scan = 1
+        local content_len = #content
+        while scan <= content_len do
+            local img_start, img_end, img_tag = content:find("(<[iI][mM][gG][^>]*/?>)", scan)
+            if not img_start then
+                -- No more images; emit the trailing text
+                local tail = content:sub(scan)
+                local ph_html = extract_placeholders(tail)
+                tail = tail:gsub("<br%s*/?>", "\n")
+                tail = tail:gsub("<[^>]+>", "")
+                tail = Content.decode_html_entities(tail)
+                for line in (tail .. "\n"):gmatch("([^\n]+)\n") do
+                    line = H.trim(line)
+                    if line ~= "" then
+                        table.insert(lines, "<p>" .. xml_escape(line) .. "</p>")
+                    end
+                end
+                if ph_html ~= "" then
+                    if #lines > 0 then
+                        lines[#lines] = lines[#lines] .. ph_html
+                    else
+                        table.insert(lines, "<p>" .. ph_html .. "</p>")
+                    end
+                end
+                break
             end
+            -- Emit text before the image
+            local before = content:sub(scan, img_start - 1)
+            local ph_html = extract_placeholders(before)
+            before = before:gsub("<br%s*/?>", "\n")
+            before = before:gsub("<[^>]+>", "")
+            before = Content.decode_html_entities(before)
+            for line in (before .. "\n"):gmatch("([^\n]+)\n") do
+                line = H.trim(line)
+                if line ~= "" then
+                    table.insert(lines, "<p>" .. xml_escape(line) .. "</p>")
+                end
+            end
+            if ph_html ~= "" then
+                if #lines > 0 then
+                    lines[#lines] = lines[#lines] .. ph_html
+                else
+                    table.insert(lines, "<p>" .. ph_html .. "</p>")
+                end
+            end
+            -- 直接输出 img 标签本身，不包外层 p
+            table.insert(lines, img_tag)
+            scan = img_end + 1
         end
         paragraphs = lines
     end
 
-    return table.concat(paragraphs, "\n")
+    -- 最终还原：把所有占位符 \001CMTN\001 替换为真实气泡 HTML
+    local result = table.concat(paragraphs, "\n")
+    local restored_count = 0
+    result = result:gsub("\001CMT(%d+)\001", function(idx_str)
+        local idx = tonumber(idx_str)
+        if comment_bubbles[idx] then
+            restored_count = restored_count + 1
+            return comment_bubbles[idx]
+        end
+        return ""
+    end)
+
+    if logger and comment_count > 0 then
+        logger.info(LOG_MODULE, "[段评] 气泡还原: restored=" .. restored_count .. "/" .. comment_count)
+    end
+
+    return result
 end
 
 function Content.txt_to_xhtml(text)
@@ -357,6 +659,41 @@ function Content.txt_to_xhtml(text)
     return '<?xml version="1.0" encoding="utf-8"?>\n'
         .. '<html xmlns="http://www.w3.org/1999/xhtml"><head><title></title></head>\n'
         .. '<body>\n' .. table.concat(parts, "\n") .. '\n</body></html>'
+end
+
+-- 确保 itemId/bookId 等大整数ID始终为字符串，防止 Lua number 精度丢失
+-- 返回: (string_id, was_numeric, precision_lost)
+local function to_precise_id(value)
+    if value == nil then return nil end
+    if type(value) == "string" then return value, false, false end
+    if type(value) == "number" then
+        local s = string.format("%.0f", value)
+        -- 检查是否精度丢失: 转回数字再转回字符串，看是否一致
+        if tonumber(s) ~= value then
+            return s, true, true
+        end
+        return s, true, false
+    end
+    return tostring(value), false, false
+end
+
+-- 递归处理chapter中的ID字段，转为字符串
+local function fix_chapter_ids(chapter)
+    if type(chapter) ~= "table" then return chapter end
+    local fixed = {}
+    for k, v in pairs(chapter) do
+        if k == "itemId" or k == "item_id" or k == "bookId" or k == "book_id" then
+            local sid = to_precise_id(v)
+            if sid then
+                fixed[k] = sid
+            else
+                fixed[k] = v
+            end
+        else
+            fixed[k] = v
+        end
+    end
+    return fixed
 end
 
 function Content.normalize_chapters(payload, book_id)
@@ -376,7 +713,7 @@ function Content.normalize_chapters(payload, book_id)
             if type(volume) == "table" then
                 for _, ch in ipairs(volume) do
                     if type(ch) == "table" and ch.itemId then
-                        table.insert(flattened, ch)
+                        table.insert(flattened, fix_chapter_ids(ch))
                     end
                 end
             end
@@ -387,14 +724,19 @@ function Content.normalize_chapters(payload, book_id)
     end
     -- Direct chapter list fields (official + third-party variants)
     if type(records.chapterList) == "table" then
-        return records.chapterList
+        local out = {}
+        for _, ch in ipairs(records.chapterList) do
+            table.insert(out, fix_chapter_ids(ch))
+        end
+        return out
     end
     -- Try extracting chapters from allItemIds if chapterListWithVolume/chapterList is empty
     if type(records.allItemIds) == "table" and #records.allItemIds > 0 then
         local chapters = {}
         for i, item_id in ipairs(records.allItemIds) do
+            local sid = to_precise_id(item_id) or tostring(item_id)
             table.insert(chapters, {
-                itemId = item_id,
+                itemId = sid,
                 title = "第" .. tostring(i) .. "章",
                 index = i - 1,
             })
@@ -406,8 +748,13 @@ function Content.normalize_chapters(payload, book_id)
     end
     for record_index, record in ipairs(records) do
         if tostring(record.bookId or "") == tostring(book_id) then
-            return record.updated or record.chapterInfos or record.chapters
+            local list = record.updated or record.chapterInfos or record.chapters
                 or record.item_list or record.list or record.chapterList or {}
+            local out = {}
+            for _, ch in ipairs(list) do
+                table.insert(out, fix_chapter_ids(ch))
+            end
+            return out
         end
     end
     return records
@@ -431,70 +778,179 @@ function Content.readable_chapters(chapters)
     return out
 end
 
+-- Helper functions for image handling
+local function image_trim(value)
+    -- Also decode common HTML entities right at extraction time (matches miuread)
+    local s = tostring(value or ""):match("^%s*(.-)%s*$") or ""
+    s = s:gsub("&amp;", "&")
+    s = s:gsub("&#38;", "&")
+    return s
+end
+
+local function image_remote_url(value)
+    local url = tostring(value or "")
+    if url:match("^//") then
+        return "https:" .. url
+    end
+    if url:match("^https?://") then
+        return url
+    end
+    return nil
+end
+
+local function image_attr(attrs, name_pattern)
+    local value = attrs:match("%s*" .. name_pattern .. "%s*=%s*[\"']([^\"']*)[\"']")
+    if not value then
+        value = attrs:match("%s*" .. name_pattern .. "%s*=%s*([^%s>]+)")
+    end
+    -- Also try at the beginning (no leading space)
+    if not value then
+        value = attrs:match("^" .. name_pattern .. "%s*=%s*[\"']([^\"']*)[\"']")
+        if not value then
+            value = attrs:match("^" .. name_pattern .. "%s*=%s*([^%s>]+)")
+        end
+    end
+    return value
+end
+
+local function image_remove_attr(attrs, name_pattern)
+    -- Remove quoted attribute: name="value" or name='value'
+    local result = attrs:gsub("%s*" .. name_pattern .. "%s*=%s*[\"'][^\"']*[\"']", "")
+    -- Remove unquoted attribute: name=value
+    result = result:gsub("%s*" .. name_pattern .. "%s*=%s*[^%s>]+", "")
+    return result
+end
+
+local function image_set_local_src(attrs, href)
+    local cleaned = image_remove_attr(attrs, "src")
+    cleaned = image_remove_attr(cleaned, "data%-src")
+    cleaned = image_remove_attr(cleaned, "data%-original")
+    cleaned = image_remove_attr(cleaned, "data%-lazy%-src")
+    cleaned = image_remove_attr(cleaned, "data%-actualsrc")
+    cleaned = image_remove_attr(cleaned, "data%-actual-src")
+    cleaned = image_remove_attr(cleaned, "srcset")
+    cleaned = cleaned:gsub("^%s+", "")
+    return ' src="' .. href .. '"' .. (cleaned or "")
+end
+
+local function image_unique_href(used, prefix, index, ext)
+    local href = string.format("images/%s_%03d%s", prefix or "img", index or 1, ext or ".png")
+    if used[href] then
+        local counter = 1
+        while used[href] do
+            href = string.format("images/%s_%03d_%d%s", prefix or "img", index or 1, counter, ext or ".png")
+            counter = counter + 1
+        end
+    end
+    used[href] = true
+    return href
+end
+
 function Content.download_remote_images(client, xhtml, used_names, progress)
     local assets = {}
     used_names = used_names or {}
-    used_names.__remote_image_hrefs = used_names.__remote_image_hrefs or {}
-    local remote_image_hrefs = used_names.__remote_image_hrefs
-    local function remote_url(src)
-        local url = tostring(src or "")
-        if url:match("^//") then
-            url = "https:" .. url
+    local source_map = {}  -- maps URL -> local href
+
+    local summary = { total = 0, downloaded = 0, failed = 0 }
+
+    xhtml = tostring(xhtml or ""):gsub("<[iI][mM][gG]([^>]*)>", function(attrs)
+        -- Find the best source URL
+        local srcset = image_attr(attrs, "srcset")
+        local source = image_attr(attrs, "data%-src")
+            or image_attr(attrs, "data%-original")
+            or image_attr(attrs, "data%-lazy%-src")
+            or image_attr(attrs, "data%-actualsrc")
+            or image_attr(attrs, "data%-actual%-src")
+            or image_attr(attrs, "src")
+            or (srcset and srcset:match("^%s*([^,%s]+)"))
+
+        local clean_source = image_trim(source)
+        if clean_source == "" then
+            return "<img" .. attrs .. ">"
         end
-        if url:match("^https?://") then
-            return url
+
+        -- Decode HTML entities in the URL (e.g. &amp; -> &)
+        clean_source = Content.decode_html_entities(clean_source)
+
+        -- Skip data: URIs
+        if clean_source:lower():match("^data:") then
+            return "<img" .. attrs .. ">"
         end
-    end
-    local img_total = 0
-    xhtml:gsub('src=(["\'])(.-)%1', function(_, src)
-        if remote_url(src) then
-            img_total = img_total + 1
+
+        -- Check if we already have this URL mapped (after entity decoding)
+        local local_src = source_map[clean_source]
+        if not local_src then
+            local url = image_remote_url(clean_source)
+            if not url then
+                -- Non-remote image (relative, etc.) - skip
+                return "<img" .. attrs .. ">"
+            end
+
+            summary.total = summary.total + 1
+
+            -- Match the exact headers that successfully fetch the image from
+            -- fqnovelpic.com (verified via curl). Desktop Edge UA + NO Referer
+            -- (adding a Referer here triggers the CDN's anti-leech protection).
+            local img_headers = {
+                ["Accept"] = "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                ["Accept-Language"] = "zh-CN,zh;q=0.9,en;q=0.8",
+                ["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+                ["Connection"] = "keep-alive",
+                ["Upgrade-Insecure-Requests"] = "1",
+            }
+
+            -- Download the image. For fqnovelpic CDN we MUST NOT send a Referer
+            -- (anti-leech triggers 403). For other hosts keep the default.
+            local img_referer = nil  -- nil = default base URL in get_binary
+            local img_host = url:match("^https?://([^/]+)")
+            if img_host and img_host:find("fqnovelpic") then
+                img_referer = false  -- explicitly send no Referer
+            end
+            local ok, data = pcall(function()
+                return client:get_binary(url, {
+                    referer = img_referer,
+                    headers = img_headers,
+                })
+            end)
+
+            if not ok or not data or #data == 0 then
+                summary.failed = summary.failed + 1
+                if logger then logger.warn("image download failed:", url) end
+                return "<img" .. attrs .. ">"
+            end
+
+            local ext, mt = media_type_for(data)
+            if not mt:match("^image/") then
+                summary.failed = summary.failed + 1
+                if logger then logger.warn("remote asset is not an image:", url, mt) end
+                return "<img" .. attrs .. ">"
+            end
+
+            -- Generate unique href
+            local img_index = #assets + 1
+            local href = image_unique_href(used_names, "img", img_index, ext)
+            local local_path = "../" .. href
+
+            assets[#assets + 1] = {
+                href = href,
+                media_type = mt,
+                data = data,
+                source = url,
+            }
+
+            source_map[clean_source] = local_path
+            local_src = local_path
+            summary.downloaded = summary.downloaded + 1
         end
-    end)
-    if img_total == 0 then
-        return xhtml, assets
-    end
-    local index = 0
-    local body = xhtml:gsub('src=(["\'])(.-)%1', function(quote, src)
-        local url = remote_url(src)
-        if not url then
-            return "src=" .. quote .. src .. quote
-        end
-        index = index + 1
+
+        -- Replace src with local path
         if progress then
-            progress(index, img_total)
+            progress(summary.downloaded, summary.total)
         end
-        local cached_href = remote_image_hrefs[url]
-        if cached_href then
-            return "src=" .. quote .. "../" .. cached_href .. quote
-        end
-        local ok, data = pcall(function()
-            return client:get_binary(url, { referer = FanQie.BASE_URL .. "/" })
-        end)
-        if not ok or not data or #data == 0 then
-            return "src=" .. quote .. src .. quote
-        end
-        local ext, mt = media_type_for(data)
-        if not mt:match("^image/") then
-            return "src=" .. quote .. src .. quote
-        end
-        local fname = ext
-        local counter = 1
-        while used_names[fname] do
-            fname = "img" .. tostring(counter) .. ext
-            counter = counter + 1
-        end
-        used_names[fname] = true
-        local href = "images/" .. fname
-        remote_image_hrefs[url] = href
-        table.insert(assets, {
-            href = href,
-            media_type = mt,
-            data = data,
-        })
-        return "src=" .. quote .. "../" .. href .. quote
+        return "<img" .. image_set_local_src(attrs, local_src) .. ">"
     end)
-    return body, assets
+
+    return xhtml, assets, summary
 end
 
 function Content.fetch_catalog(client, book)
@@ -505,27 +961,98 @@ function Content.fetch_catalog(client, book)
     return chapters
 end
 
-function Content.fetch_chapter_content(client, settings, book, chapter)
-    local book_id = book.book_id or book.bookId
-    local item_id = chapter.itemId or chapter.item_id
-    local result = client:get_chapter_content_with_fallback(book_id, item_id)
+function Content.fetch_chapter_content(client, settings, book, chapter, opts)
+    opts = opts or {}
+    local book_id = tostring(book.book_id or book.bookId or "")
+    local item_id = tostring(chapter.itemId or chapter.item_id or "")
+
+    local t_fetch = now_ms()
+    local fetch_opts = opts.review and { review = true } or nil
+    local result = client:get_chapter_content_with_fallback(book_id, item_id, fetch_opts)
+    local fetch_elapsed = now_ms() - t_fetch
+
     local content = result.content or ""
     local title = result.title or chapter.title or ""
     if result.author and result.author ~= "" and (not book.author or book.author == "未知") then
         book.author = result.author
     end
 
+    local t_pua = now_ms()
     -- Only decode PUA if content actually contains PUA codepoints
     -- PUA range U+E3F8-U+E55C encodes to UTF-8 starting with 0xEE (238)
     -- Normal Chinese text (U+4E00-U+9FFF) starts with 0xE4-0xE9, never 0xEE
     if content:find("\238", 1, true) then
         content = Content.decode_pua_content(content)
     end
+    local pua_elapsed = now_ms() - t_pua
 
+    local t_clean = now_ms()
+
+    -- 段评诊断：检查原始正文中是否含 <comment> 标签（区分"请求问题"还是"处理问题"）
+    local raw_comment_count = 0
+    local raw_comment_pos = content:find("<comment", 1, true)
+    if raw_comment_pos then
+        for _ in content:gmatch("<comment[^>]*/?>") do
+            raw_comment_count = raw_comment_count + 1
+        end
+    end
+    if logger then
+        logger.info(LOG_MODULE, "[段评] fetch_chapter_content:",
+            "itemId=" .. item_id,
+            "review_mode=" .. tostring(opts.review == true),
+            "raw_has_comment=" .. tostring(raw_comment_pos ~= nil),
+            "raw_comment_count=" .. raw_comment_count,
+            "para_reviews_from_api=" .. tostring(#(result.para_reviews or {})),
+            "raw_content_len=" .. tostring(#content))
+    end
+
+    if logger then
+        -- Debug: dump original content to see where <img> tags sit in the source.
+        -- Replace literal newlines with visible \n markers so log lines don't
+        -- get collapsed, and tag every <img> with a [IMG@N] marker.
+        local preview = content
+        -- Make <img> tags visually obvious
+        local img_count = 0
+        preview = preview:gsub("(<[iI][mM][gG][^>]*/?>)", function(tag)
+            img_count = img_count + 1
+            return "\n[[IMG" .. img_count .. "]]" .. tag .. "[[/IMG" .. img_count .. "]]\n"
+        end)
+        if #preview > 4000 then preview = preview:sub(1, 4000) .. "...[truncated]" end
+        logger.debug(LOG_MODULE, "[debug] raw content before clean, len=" .. tostring(#content) .. " img_count=" .. img_count .. ":\n" .. preview)
+    end
     local cleaned = Content.clean_chapter_content(content, title)
+    local clean_elapsed = now_ms() - t_clean
+    if logger then
+        local preview2 = cleaned
+        if #preview2 > 4000 then preview2 = preview2:sub(1, 4000) .. "...[truncated]" end
+        logger.debug(LOG_MODULE, "[debug] cleaned content, len=" .. tostring(#cleaned) .. ":\n" .. preview2)
+        -- 验证清洗后的正文是否含气泡
+        local bubble_count = 0
+        for _ in cleaned:gmatch('class="para%-comment"') do
+            bubble_count = bubble_count + 1
+        end
+        logger.info(LOG_MODULE, "[段评] 清洗结果: bubble_in_cleaned=" .. bubble_count
+            .. " raw_comment=" .. raw_comment_count
+            .. " (若 raw_comment>0 但 bubble=0 则是处理bug, 已修复)")
+    end
+
+    if logger then
+        logger.debug(LOG_MODULE, "[perf] fetch_chapter_content:",
+            "itemId=" .. item_id,
+            "fetch=" .. string.format("%.0f", fetch_elapsed) .. "ms",
+            "pua_decode=" .. string.format("%.0f", pua_elapsed) .. "ms",
+            "clean=" .. string.format("%.0f", clean_elapsed) .. "ms",
+            "raw_len=" .. tostring(#content),
+            "cleaned_len=" .. tostring(#cleaned))
+    end
+
+    -- 段评数据从 result 中提取，存储到返回值中
+    local para_reviews = result.para_reviews or {}
+    
     return '<?xml version="1.0" encoding="utf-8"?>\n'
         .. '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>' .. xml_escape(title) .. '</title></head>\n'
-        .. '<body>\n' .. cleaned .. '\n</body></html>'
+        .. '<body>\n' .. cleaned .. '\n</body></html>',
+        para_reviews
 end
 
 -- ---------------------------------------------------------------------------
@@ -536,28 +1063,98 @@ function Content.save_chapter_html(settings, book, chapter, xhtml, assets, css)
     local book_id = book.book_id or book.bookId
     local dir = Content.book_cache_dir(settings, book_id)
     H.make_dir(dir)
+    local images_dir = dir .. "/images"
     local item_id = tostring(chapter.itemId)
     local path = dir .. "/" .. "chapter_" .. item_id .. ".html"
     local title = chapter.title or book.title or "FanQie"
 
-    -- inline remote images as base64 data URIs if downloaded
-    local body = body_fragment(xhtml)
+    -- 1. Write downloaded image assets to actual files on disk (relative-path fallback for crengine)
+    --    href in assets is "images/img_001.png"; relative to dir this resolves correctly.
+    local href_to_rel = {}
     if assets and #assets > 0 then
-        local href_to_data = {}
+        H.make_dir(images_dir)
         for _, a in ipairs(assets) do
-            local ext = a.href:match("%.(.+)$") or ""
-            href_to_data[a.href] = "data:" .. a.media_type .. ";base64," .. base64_encode(a.data)
-        end
-        body = body:gsub('src=(["\'])(.-)%1', function(q, src)
-            src = src:gsub("^%.%./", "")
-            if href_to_data[src] then
-                return 'src=' .. q .. href_to_data[src] .. q
+            local file_href = a.href  -- "images/img_001.png"
+            local abs_path = dir .. "/" .. file_href
+            local ok_write, err_write = pcall(function()
+                H.write_file(abs_path, a.data)
+            end)
+            if not ok_write then
+                if logger then logger.warn("failed to save image file:", abs_path, tostring(err_write)) end
             end
-            return 'src=' .. q .. src .. q
-        end)
+            href_to_rel[a.href] = file_href
+            href_to_rel["../" .. a.href] = file_href
+        end
     end
 
+    -- 2. Build href -> base64 data URI map (primary strategy, single-file embedding)
+    local href_to_data = {}
+    if assets and #assets > 0 then
+        for _, a in ipairs(assets) do
+            href_to_data[a.href] = "data:" .. a.media_type .. ";base64," .. base64_encode(a.data)
+            href_to_data["../" .. a.href] = "data:" .. a.media_type .. ";base64," .. base64_encode(a.data)
+        end
+    end
+
+    -- 3. Extract body fragment (already has images processed by download_remote_images)
+    local body = body_fragment(xhtml)
+
+    -- 4. Process <img> tags in the body:
+    --    (a) downloaded src -> embed as base64 data URI (preferred)
+    --    (b) everything else: decode HTML entities in the src URL (&amp; -> &) so online links work
+    local visited = {}
+    body = body:gsub('<[iI][mM][gG]([^>]*)>', function(attrs)
+        -- Extract current src (quoted variants first)
+        local src, quote_char = nil, nil
+        local s_start, s_end, q, val = attrs:find('%ssrc%s*=%s*(["\'])(.-)%1')
+        if s_start then
+            src, quote_char = val, q
+        else
+            s_start, s_end, val = attrs:find('%ssrc%s*=%s*([^%s>]+)')
+            if s_start then
+                src, quote_char = val, nil
+            end
+        end
+
+        local new_src = nil
+        if src then
+            -- First, try data-URI embedding for downloaded assets
+            local data_uri = href_to_data[src]
+            if not data_uri then
+                local stripped = src:gsub("^%.%./", "")
+                data_uri = href_to_data[stripped]
+            end
+            if data_uri then
+                new_src = data_uri
+            else
+                -- Not a downloaded asset; still decode HTML entities so URLs are valid
+                new_src = Content.decode_html_entities(src)
+            end
+        end
+
+        if not new_src or new_src == src then
+            return "<img" .. attrs .. ">"
+        end
+
+        -- Replace only the src attribute in attrs, preserving all others (width, height, alt, ...)
+        local new_attrs
+        if quote_char then
+            new_attrs = attrs:gsub('(%ssrc%s*=%s*)["\'].-["\']', '%1' .. quote_char .. new_src .. quote_char, 1)
+        else
+            new_attrs = attrs:gsub('(%ssrc%s*=%s*)[^%s>]+', '%1' .. '"' .. new_src .. '"', 1)
+        end
+        -- Safety fallback: if gsub missed, reconstruct manually
+        if new_attrs == attrs then
+            -- Remove old src (any form) and append new one
+            local cleaned = attrs:gsub('%ssrc%s*=%s*["\'][^"\']*["\']', ''):gsub('%ssrc%s*=%s*[^%s>]+', '')
+            new_attrs = cleaned .. ' src="' .. new_src .. '"'
+        end
+        return "<img" .. new_attrs .. ">"
+    end)
+
     css = css or [[body { font-size: 1.05em; }]]
+    -- 段评交互通过 <a href="fanqie-para:N"> 链接实现，KOReader crengine
+    -- 不支持 JavaScript，点击链接会触发 onGotoLink 事件，插件拦截处理
     local html = [[<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -577,36 +1174,120 @@ function Content.save_chapter_html(settings, book, chapter, xhtml, assets, css)
     return path
 end
 
-function Content.fetch_chapter_html(client, settings, book, chapter)
+function Content.fetch_chapter_html(client, settings, book, chapter, opts)
+    opts = opts or {}
+    local t_total = now_ms()
     local book_id = book.book_id or book.bookId
     local item_id = tostring(chapter.itemId)
-    
-    local ok_fetch, xhtml = pcall(Content.fetch_chapter_content, client, settings, book, chapter)
+
+    local t_fetch = now_ms()
+    local ok_fetch, xhtml, para_reviews = pcall(Content.fetch_chapter_content, client, settings, book, chapter, opts)
+    local fetch_elapsed = now_ms() - t_fetch
     if not ok_fetch then
         error("fetch_chapter_content failed: " .. tostring(xhtml))
     end
-    
-    local css = [[body { font-size: 1.05em; }]]
+
+    -- 段评气泡 CSS（简洁上标数字，墨水屏黑白兼容，无动画无倾斜）
+    local css = [[
+body { font-size: 1.05em; }
+
+/* 纯图片段落：去除首行缩进，居中显示 */
+p.img-p {
+  text-indent: 0 !important;
+  text-align: center;
+  margin: 0.5em 0;
+}
+p.img-p img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* 段评数字：上标小号数字，点击触发 onGotoLink */
+a.para-comment {
+  font-size: 0.5em;
+  vertical-align: super;
+  text-decoration: none;
+  margin-left: 2px;
+}
+]]
     local assets = {}
     local cache = settings:get("cache", {})
-    if cache.download_book_images then
+    local img_elapsed = 0
+    -- Match menu semantics: download unless explicitly disabled (nil/true → download)
+    if cache.download_book_images ~= false then
         local used_names = {}
+        local t_img = now_ms()
         local ok_img, inline_xhtml, inline_assets = pcall(Content.download_remote_images, client, xhtml, used_names)
-        if ok_img then
+        img_elapsed = now_ms() - t_img
+        if ok_img and inline_xhtml then
             xhtml = inline_xhtml
-            for _, a in ipairs(inline_assets) do
+            for _, a in ipairs(inline_assets or {}) do
                 table.insert(assets, a)
             end
         end
     end
+
+    local t_save = now_ms()
     local path = Content.save_chapter_html(settings, book, chapter, xhtml, assets, css)
+    local save_elapsed = now_ms() - t_save
+
     book.cached_chapters = book.cached_chapters or {}
     book.cached_chapters[item_id] = path
     book.cached_file = path
     book.item_id = chapter.itemId
     book.reader_url = book.reader_url or FanQie.reader_url(chapter.itemId)
+    
+    -- 存储段评数据到缓存
+    if para_reviews and #para_reviews > 0 then
+        Content.save_para_reviews_index(settings, book_id, item_id, para_reviews)
+    end
+
+    local t_idx = now_ms()
     Content.save_cache_index(settings, book_id, book.cached_chapters)
-    return path, chapter
+    local idx_elapsed = now_ms() - t_idx
+
+    local total_elapsed = now_ms() - t_total
+    if logger then
+        logger.debug(LOG_MODULE, "[perf] fetch_chapter_html TOTAL:",
+            "itemId=" .. item_id,
+            "total=" .. string.format("%.0f", total_elapsed) .. "ms",
+            "content_fetch=" .. string.format("%.0f", fetch_elapsed) .. "ms",
+            "images=" .. string.format("%.0f", img_elapsed) .. "ms",
+            "save_html=" .. string.format("%.0f", save_elapsed) .. "ms",
+            "save_index=" .. string.format("%.0f", idx_elapsed) .. "ms",
+            "assets_count=" .. tostring(#assets))
+    end
+
+    return path, chapter, para_reviews
+end
+
+-- 段评数据持久化：保存/加载每个章节的段评索引
+function Content.save_para_reviews_index(settings, book_id, item_id, para_reviews)
+    local dir = Content.book_cache_dir(settings, book_id)
+    H.make_dir(dir)
+    local index_path = H.join_path(dir, "para_reviews_" .. tostring(item_id) .. ".lua")
+    local parts = { "return {" }
+    for i, pr in ipairs(para_reviews or {}) do
+        if pr.ident and pr.count then
+            table.insert(parts, string.format('  { ident = "%s", count = %d },', 
+                tostring(pr.ident):gsub('"', '\\"'), pr.count))
+        end
+    end
+    table.insert(parts, "}")
+    H.write_file(index_path, table.concat(parts, "\n"))
+end
+
+function Content.load_para_reviews_index(settings, book_id, item_id)
+    local dir = Content.book_cache_dir(settings, book_id)
+    local index_path = H.join_path(dir, "para_reviews_" .. tostring(item_id) .. ".lua")
+    if not H.file_exists(index_path) then
+        return {}
+    end
+    local ok, data = pcall(dofile, index_path)
+    if not ok or type(data) ~= "table" then
+        return {}
+    end
+    return data
 end
 
 return Content

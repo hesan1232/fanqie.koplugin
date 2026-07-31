@@ -5,10 +5,10 @@ local T = _
 local ok_UIManager, UIManager = pcall(require, "ui/uimanager")
 local ok_InfoMessage, InfoMessage = pcall(require, "ui/widget/infomessage")
 
-local ok_H, H = pcall(require, "lib.helper")
-local ok_Log, Log = pcall(require, "lib.logger")
-local ok_Content, Content = pcall(require, "lib.content")
-local ok_state, _state = pcall(require, "lib.state")
+local ok_H, H = pcall(require, "fanqie.helper")
+local ok_Log, Log = pcall(require, "fanqie.logger")
+local ok_Content, Content = pcall(require, "fanqie.content")
+local ok_state, _state = pcall(require, "fanqie.state")
 
 local ReaderNavigation = {}
 
@@ -23,6 +23,10 @@ function ReaderNavigation:navigateToChapter(book, chapters, chapter_index, opts)
 
     _state.current_book = book
     _state.current_chapters = chapters
+
+    -- 从全局状态获取段评开关
+    local review_enabled = _state.isReviewEnabled()
+    local fetch_opts = review_enabled and { review = true } or nil
 
     local item_id = tostring(chapter.itemId)
     local existing_path = nil
@@ -39,9 +43,35 @@ function ReaderNavigation:navigateToChapter(book, chapters, chapter_index, opts)
         end
     end
 
+    -- 如果段评开启且有缓存，检查是否需要重新下载（如果没有段评数据）
+    if existing_path and review_enabled then
+        local existing_reviews = Content and Content.load_para_reviews_index(self.settings, book.book_id, item_id) or {}
+        if #existing_reviews == 0 then
+            existing_path = nil  -- 没有段评数据，需要重新获取
+        end
+    end
+
+    -- If not found in cache index, try to find file directly from filesystem
+    if not existing_path or not (H and H.file_exists(existing_path)) then
+        local found_path = Content and Content.find_chapter_file(self.settings, book.book_id, item_id)
+        if found_path then
+            -- Update cache index with found file
+            book.cached_chapters = book.cached_chapters or {}
+            book.cached_chapters[item_id] = found_path
+            Content.save_cache_index(self.settings, book.book_id, book.cached_chapters)
+            existing_path = found_path
+            if Log then Log.info("found cached chapter in filesystem:", item_id) end
+        end
+    end
+
     if existing_path and H and H.file_exists(existing_path) then
         _state.current_chapter_index = chapter_index
         _state.pre_download_triggered = false
+        -- 加载段评数据
+        if review_enabled then
+            local reviews = Content and Content.load_para_reviews_index(self.settings, book.book_id, item_id) or {}
+            _state.setCurrentParaReviews(reviews)
+        end
         self:showReaderUI(existing_path, chapter)
         if opts.after_navigate then
             UIManager:scheduleIn(1.0, opts.after_navigate)
@@ -53,21 +83,30 @@ function ReaderNavigation:navigateToChapter(book, chapters, chapter_index, opts)
     self:showBusy(T(_("正在下载: %s"), chapter.title or ""))
 
     UIManager:scheduleIn(0.1, function()
-        local ok, path = pcall(function()
+        local ok, result = pcall(function()
             local b = { book_id = book.book_id, title = book.title, author = book.author }
-            return Content and Content.fetch_chapter_html(self.client, self.settings, b, chapter)
+            local path, ch, para_reviews = Content and Content.fetch_chapter_html(self.client, self.settings, b, chapter, fetch_opts)
+            return { path = path, para_reviews = para_reviews }
         end)
         self:closeBusy()
 
         if not ok then
-            if Log then Log.error("navigateToChapter download failed:", tostring(path)) end
+            if Log then Log.error("navigateToChapter download failed:", tostring(result)) end
             _state.is_downloading = false
-            self:showError(T(_(opts.error_message or "下载章节失败:\n%1"), self:displayError(path)))
+            self:showError(T(_(opts.error_message or "下载章节失败:\n%1"), self:displayError(result)))
             return
         end
 
+        local path = result.path
+        local para_reviews = result.para_reviews
+
         book.cached_chapters = book.cached_chapters or {}
         book.cached_chapters[item_id] = path
+
+        -- 存储段评数据到全局状态
+        if review_enabled and para_reviews then
+            _state.setCurrentParaReviews(para_reviews)
+        end
 
         _state.current_chapter_index = chapter_index
         _state.pre_download_triggered = false
@@ -98,15 +137,19 @@ function ReaderNavigation:preDownloadChapters(book, chapters, current_index)
     if _state.pre_download_triggered then return end
     _state.pre_download_triggered = true
 
-    local pre_download_count = self.settings:get("pre_download_count", 5)
+    local cache = self.settings:get("cache", {})
+    local pre_download_count = cache.pre_download_chapters or 3
     local start_idx = current_index + 1
     local end_idx = math.min(current_index + pre_download_count, #chapters)
 
     if start_idx > end_idx then
         return
     end
+    
+    local review_enabled = _state.isReviewEnabled()
+    local fetch_opts = review_enabled and { review = true } or nil
 
-    UIManager:scheduleIn(2.0, function()
+    UIManager:scheduleIn(1.0, function()
         for i = start_idx, end_idx do
             if _state.is_downloading then
                 break
@@ -120,17 +163,30 @@ function ReaderNavigation:preDownloadChapters(book, chapters, current_index)
                 local cached = _state.getChapterIndexCache(book.book_id)
                 existing_path = cached and cached[item_id]
             end
+            -- 如果段评开启，还需检查是否有段评数据
+            if existing_path and review_enabled then
+                local existing_reviews = Content and Content.load_para_reviews_index(self.settings, book.book_id, item_id) or {}
+                if #existing_reviews == 0 then
+                    existing_path = nil  -- 没有段评数据
+                end
+            end
             if not existing_path or not H.file_exists(existing_path) then
-                local ok, path = pcall(function()
+                if Log then Log.info("pre-download: downloading chapter", i) end
+                local ok, result = pcall(function()
                     local b = { book_id = book.book_id, title = book.title, author = book.author }
-                    return Content.fetch_chapter_html(self.client, self.settings, b, chapter)
+                    return Content.fetch_chapter_html(self.client, self.settings, b, chapter, fetch_opts)
                 end)
                 if ok then
                     book.cached_chapters = book.cached_chapters or {}
-                    book.cached_chapters[item_id] = path
+                    book.cached_chapters[item_id] = result
+                    if Log then Log.info("pre-download: completed chapter", i) end
+                else
+                    if Log then Log.warn("pre-download: failed chapter", i, tostring(result)) end
                 end
             end
         end
+        -- Reset flag so next chapter can trigger pre-download again
+        _state.pre_download_triggered = false
     end)
 end
 
