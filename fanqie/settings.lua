@@ -62,7 +62,7 @@ local defaults = {
     sources = {
         qingtian = {
             enabled = true,
-            order = 1,
+            order = 2,
             server_url = "https://v1.gyks.cf/",
             username = "",
             password = "",
@@ -73,7 +73,7 @@ local defaults = {
         },
         dahuilang = {
             enabled = true,
-            order = 2,
+            order = 1,
             server_url = "https://v2.czyl.cf",
             username = "",
             password = "",

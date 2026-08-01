@@ -35,6 +35,8 @@ local DataStorage = safe_require("datastorage")
 
 local Menu = safe_require("ui/widget/menu")
 
+local TextViewer = safe_require("ui/widget/textviewer")
+
 local PathChooser = safe_require("ui/widget/pathchooser")
 
 local Event = safe_require("ui/event")
@@ -326,7 +328,7 @@ end
 
 function FanQiePlugin:getReviewMenuItems()
     local items = {}
-    
+
     -- 段评开关
     table.insert(items, {
         text_func = function()
@@ -340,7 +342,7 @@ function FanQiePlugin:getReviewMenuItems()
         callback = function(touchmenu_instance)
             local new_state = not _state.isReviewEnabled()
             _state.setReviewEnabled(new_state)
-            
+
             if new_state then
                 -- 开启段评：重新获取当前章节（带 review=1）
                 self:showInfo(_("段评已开启，正在重新获取章节..."))
@@ -350,26 +352,13 @@ function FanQiePlugin:getReviewMenuItems()
                 _state.clearParaReviews()
                 self:showInfo(_("段评已关闭"))
             end
-            
+
             if touchmenu_instance then
                 touchmenu_instance:updateItems()
             end
         end,
     })
-    
-    -- 查看当前章节段评列表
-    local reviews = _state.getCurrentParaReviews()
-    local review_count = #reviews
-    
-    table.insert(items, {
-        text = T(_("本章段评 (%1)"), tostring(review_count)),
-        enabled_func = function() return review_count > 0 end,
-        keep_menu_open = true,
-        callback = function()
-            self:showParaReviewList()
-        end,
-    })
-    
+
     -- 刷新段评
     table.insert(items, {
         text = _("刷新段评数据"),
@@ -382,7 +371,7 @@ function FanQiePlugin:getReviewMenuItems()
             end
         end,
     })
-    
+
     return items
 end
 
@@ -519,20 +508,79 @@ function FanQiePlugin:showParaReviewDetail(index)
         end
 
         if #comments > 0 then
+            -- 使用 TextViewer 展示段评，可滚动浏览
             local text_parts = {}
             for i, comment in ipairs(comments) do
                 local username = tostring(comment.username or comment.user_name
+                    or (comment.user and comment.user.user_name)
+                    or (comment.user and comment.user.nick_name)
                     or comment.nick_name or comment.nickname or "匿名")
                 local content_text = tostring(comment.content or comment.text or "")
-                local like_count = comment.like_count or comment.likeCount or 0
-                local time = tostring(comment.create_time or comment.create_at
-                    or comment.time or "")
-                local reply_count = comment.reply_count or comment.replyCount or 0
+                local like_count = tonumber(comment.like_count or comment.likeCount) or 0
+                local reply_count = tonumber(comment.reply_count or comment.replyCount) or 0
+                local raw_time = comment.create_time or comment.create_at or comment.time
+                local time_str = ""
+                if type(raw_time) == "number" then
+                    -- Unix 时间戳 → 可读格式
+                    time_str = os.date("%Y-%m-%d %H:%M", raw_time)
+                elseif raw_time then
+                    time_str = tostring(raw_time)
+                end
 
-                table.insert(text_parts, string.format("%d. %s (赞%d 回复%d) %s\n%s",
-                    i, username, like_count, reply_count, time, content_text))
+                -- 格式: 序号. 用户名 (赞N 回复N) 时间
+                --        评论内容
+                local header = string.format("%d. %s (赞%d 回复%d)", i, username, like_count, reply_count)
+                if time_str ~= "" then
+                    header = header .. "  " .. time_str
+                end
+                table.insert(text_parts, header .. "\n" .. content_text)
             end
-            self:showInfo(T(_("段评 (%1条):\n\n%2"), tostring(#comments), table.concat(text_parts, "\n\n")))
+
+            local total_reviews = #reviews
+            local review_text = table.concat(text_parts, "\n\n")
+
+            -- 构建底部按钮：上一段 / 下一段 / 关闭
+            local buttons_table = {}
+            local nav_row = {}
+            if index > 1 then
+                table.insert(nav_row, {
+                    text = _("上一段"),
+                    callback = function()
+                        UIManager:close(self._para_viewer)
+                        self:showParaReviewDetail(index - 1)
+                    end,
+                })
+            end
+            if index < total_reviews then
+                table.insert(nav_row, {
+                    text = _("下一段"),
+                    callback = function()
+                        UIManager:close(self._para_viewer)
+                        self:showParaReviewDetail(index + 1)
+                    end,
+                })
+            end
+            if #nav_row > 0 then
+                table.insert(buttons_table, nav_row)
+            end
+            table.insert(buttons_table, {
+                {
+                    text = _("关闭"),
+                    callback = function()
+                        UIManager:close(self._para_viewer)
+                    end,
+                },
+            })
+
+            self._para_viewer = TextViewer:new{
+                title = T(_("段评 %1/%2 (共%3条)"), tostring(index),
+                    tostring(total_reviews), tostring(#comments)),
+                text = review_text,
+                text_type = "book_info",
+                justified = false,
+                buttons_table = buttons_table,
+            }
+            UIManager:show(self._para_viewer)
         else
             self:showInfo(T(_("本条段评共 %1 条评论，暂无显示数据"), tostring(total)))
         end

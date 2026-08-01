@@ -2,6 +2,10 @@ local function rshift(n, k)
     return math.floor(n / (2 ^ k))
 end
 
+local function lshift(n, k)
+    return math.floor(n * (2 ^ k))
+end
+
 local FanQie = require("fanqie.fanqie")
 
 local ok_logger, logger = pcall(require, "fanqie.logger")
@@ -24,6 +28,13 @@ local H = require("fanqie.helper")
 local Content = {}
 
 local b64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+-- 创建 base64 解码查找表
+local b64decode = {}
+for i = 1, 64 do
+    b64decode[b64chars:sub(i, i)] = i - 1
+end
+b64decode["="] = 0
 
 local function base64_encode(data)
     local len = #data
@@ -51,6 +62,112 @@ local function base64_encode(data)
         idx = idx + 4
     end
     return table.concat(out)
+end
+
+local function base64_decode(data)
+    if not data then return nil end
+    -- 移除所有非 base64 字符（除了 = 填充符）
+    data = data:gsub("[^%w%+%/=]", "")
+    if #data == 0 then return nil end
+    local result = {}
+    local idx = 1
+    for i = 1, #data, 4 do
+        local a = b64decode[data:sub(i, i)] or 0
+        local b = b64decode[data:sub(i + 1, i + 1)] or 0
+        local c_char = data:sub(i + 2, i + 2)
+        local d_char = data:sub(i + 3, i + 3)
+        -- 组合成 24 位值: (a << 18) | (b << 12) | (c << 6) | d
+        local n = lshift(a, 18) + lshift(b, 12)
+        if c_char and c_char ~= "=" then
+            local c_val = b64decode[c_char] or 0
+            n = n + lshift(c_val, 6)
+            if d_char and d_char ~= "=" then
+                local d_val = b64decode[d_char] or 0
+                n = n + d_val
+                -- 输出 3 个字节
+                result[idx] = string.char(rshift(n, 16) % 256)
+                result[idx + 1] = string.char(rshift(n, 8) % 256)
+                result[idx + 2] = string.char(n % 256)
+                idx = idx + 3
+            else
+                -- 2 个字节（d 是 =）
+                result[idx] = string.char(rshift(n, 16) % 256)
+                result[idx + 1] = string.char(rshift(n, 8) % 256)
+                idx = idx + 2
+            end
+        else
+            -- 1 个字节（c 是 =）
+            result[idx] = string.char(rshift(n, 16) % 256)
+            idx = idx + 1
+        end
+    end
+    return table.concat(result)
+end
+
+-- SVG 墨水屏兼容转换
+-- crengine 不支持 rgba()、opacity、stroke-opacity 等半透明属性
+-- 策略：
+--   1. rgba(x,y,z,a) → 基于 alpha 映射为灰度纯色
+--   2. 移除 opacity/stroke-opacity/fill-opacity 属性
+--   3. 彩色（红/橙等）→ 深灰
+--   4. 白色文字 → 深灰（墨水屏上白色文字不可见）
+--   5. 给 <svg> 根元素添加浅灰背景，防止透明区域变黑
+local function fix_svg_for_inkscreen(svg_str)
+    if not svg_str or svg_str:find("<svg", 1, true) ~= 1 then
+        return svg_str
+    end
+    -- rgba(r,g,b,a) → 纯色替换
+    svg_str = svg_str:gsub("rgba%(%s*(%d+)%s*,%s*(%d+)%s*,%s*(%d+)%s*,%s*([%.%d]+)%s*%)", function(r, g, b, a)
+        local alpha = tonumber(a) or 1.0
+        if alpha < 0.15 then
+            return "#FFFFFF"  -- 几乎透明 → 白色
+        elseif alpha < 0.3 then
+            return "#EEEEEE"  -- 浅灰
+        elseif alpha < 0.5 then
+            return "#DDDDDD"  -- 淡灰
+        elseif alpha < 0.7 then
+            return "#BBBBBB"  -- 中灰
+        else
+            return "#999999"  -- 深灰
+        end
+    end)
+    -- 移除不支持的 opacity 属性
+    svg_str = svg_str:gsub('opacity%s*=%s*"[%.%d]+"', "")
+    svg_str = svg_str:gsub("opacity%s*=%s*'[%.%d]+'", "")
+    svg_str = svg_str:gsub('stroke%-opacity%s*=%s*"[%.%d]+"', "")
+    svg_str = svg_str:gsub("stroke%-opacity%s*=%s*'[%.%d]+'", "")
+    svg_str = svg_str:gsub('fill%-opacity%s*=%s*"[%.%d]+"', "")
+    svg_str = svg_str:gsub("fill%-opacity%s*=%s*'[%.%d]+'", "")
+    -- 彩色 → 深灰（墨水屏不支持彩色）
+    svg_str = svg_str:gsub('fill%s*=%s*"#F06260"', 'fill="#444444"')
+    svg_str = svg_str:gsub("fill%s*=%s*'#F06260'", "fill='#444444'")
+    -- 白色文字 → 深灰（墨水屏上白色不可见）
+    svg_str = svg_str:gsub('fill%s*=%s*"#FFFFFF"', 'fill="#333333"')
+    svg_str = svg_str:gsub("fill%s*=%s*'#FFFFFF'", "fill='#333333'")
+    -- 给 <svg> 根元素添加浅灰背景，防止透明区域在墨水屏上显示为黑色
+    svg_str = svg_str:gsub("<svg([^>]*)>", function(attrs)
+        if not attrs:find('fill=', 1, true) then
+            return "<svg" .. attrs .. ' fill="#F5F5F5">'
+        end
+        return "<svg" .. attrs .. ">"
+    end, 1)
+    return svg_str
+end
+
+-- 修正正文中所有 data:image/svg+xml;base64 图片
+-- 解码 base64 → 修正 SVG → 重新编码
+local function fix_svg_imgs_in_text(text)
+    local result = text:gsub('(<[iI][mM][gG][^>]*src%s*=%s*")(data:image/svg%+xml;base64,)([^"]*)("[^>]*>)',
+        function(prefix, prefix2, b64_data, suffix)
+            local svg_decoded = base64_decode(b64_data)
+            if svg_decoded and svg_decoded:find("<svg", 1, true) == 1 then
+                local fixed_svg = fix_svg_for_inkscreen(svg_decoded)
+                local fixed_b64 = base64_encode(fixed_svg)
+                return prefix .. prefix2 .. fixed_b64 .. suffix
+            end
+            return prefix .. prefix2 .. b64_data .. suffix
+        end)
+    return result
 end
 
 local function basename_safe(value)
@@ -464,6 +581,20 @@ function Content.clean_chapter_content(raw_content, title)
         end
     end
 
+    -- SVG 墨水屏兼容修正：在段落处理前统一处理所有 data:image/svg+xml;base64 图片
+    -- crengine 不支持 rgba()、opacity、stroke-opacity 等半透明属性，
+    -- 会导致 SVG 背景变黑。这里提前解码→修正→重编码。
+    local svg_count_before = 0
+    for _ in content:gmatch('data:image/svg%+xml;base64,') do
+        svg_count_before = svg_count_before + 1
+    end
+    if svg_count_before > 0 then
+        content = fix_svg_imgs_in_text(content)
+        if logger then
+            logger.warn(LOG_MODULE, "[图片] SVG 墨水屏兼容修正: 处理 " .. svg_count_before .. " 个 SVG 图片")
+        end
+    end
+
     -- 辅助函数：从文本中提取占位符（用于段落之间的 <comment>，已变成占位符）
     -- 占位符 \001CMTN\001 不含 <>&" ，不会被 strip_tags 删除
     local function extract_placeholders(text)
@@ -474,6 +605,17 @@ function Content.clean_chapter_content(raw_content, title)
         return table.concat(phs, "")
     end
 
+    -- 辅助函数：从文本中提取 <img> 标签（用于段落之间的正文插图 / 神评预览图）
+    -- 这些 <img> 不在任何 <p> 内部（位于 </p> 与下一个 <p> 之间，或正文末尾），
+    -- 若不主动保留，会被下面的段落切分逻辑静默丢弃，导致正文插图被"清洗段评"误删。
+    local function extract_images(text)
+        local imgs = {}
+        for img in text:gmatch("<[iI][mM][gG][^>]*/?>") do
+            table.insert(imgs, img)
+        end
+        return table.concat(imgs, "")
+    end
+
     -- Extract paragraphs, preserving inline images IN THEIR ORIGINAL ORDER.
     -- 段落之间的占位符（原 <comment>）提取后追加到段落末尾。
     -- 段落内部的占位符随文字流自然保留，最终还原为内联气泡。
@@ -481,11 +623,29 @@ function Content.clean_chapter_content(raw_content, title)
     local para_regex = "<p[^>]->([%s%S]-)</p>"
     local pos = 1
 
+    -- 图片追踪：统计各位置发现的 <img> 数量，用于诊断"正文插图被清洗"问题
+    local img_stats = { before = 0, inner = 0, tail = 0, fallback = 0 }
+    local img_before_clean = 0
+    for _ in content:gmatch("<[iI][mM][gG][^>]*/?>") do
+        img_before_clean = img_before_clean + 1
+    end
+
     while true do
         local start_pos, end_pos, inner = content:find(para_regex, pos)
         if not start_pos then
-            -- 没有更多 <p> 标签，处理最后一段残留内容中的占位符
+            -- 没有更多 <p> 标签，处理最后一段残留内容中的 <img> 与占位符
             local tail = content:sub(pos)
+            local tail_imgs = extract_images(tail)
+            for _ in tail_imgs:gmatch("<[iI][mM][gG][^>]*/?>") do
+                img_stats.tail = img_stats.tail + 1
+            end
+            if tail_imgs ~= "" then
+                if #paragraphs > 0 then
+                    paragraphs[#paragraphs] = paragraphs[#paragraphs] .. tail_imgs
+                else
+                    table.insert(paragraphs, tail_imgs)
+                end
+            end
             local ph_html = extract_placeholders(tail)
             if ph_html ~= "" then
                 if #paragraphs > 0 then
@@ -497,8 +657,20 @@ function Content.clean_chapter_content(raw_content, title)
             break
         end
 
-        -- 处理 <p> 标签之前的内容（段落之间的占位符）
+        -- 处理 <p> 标签之前的内容（段落之间的 <img> 正文插图/神评预览图 与占位符）
+        -- 段落之间的 <img> 必须主动保留并挂到上一段末尾，否则会被段落切分丢弃
         local before_text = content:sub(pos, start_pos - 1)
+        local before_imgs = extract_images(before_text)
+        for _ in before_imgs:gmatch("<[iI][mM][gG][^>]*/?>") do
+            img_stats.before = img_stats.before + 1
+        end
+        if before_imgs ~= "" then
+            if #paragraphs > 0 then
+                paragraphs[#paragraphs] = paragraphs[#paragraphs] .. before_imgs
+            else
+                table.insert(paragraphs, before_imgs)
+            end
+        end
         local ph_html = extract_placeholders(before_text)
 
         -- Walk through the paragraph, interleaving text snippets with images
@@ -536,6 +708,7 @@ function Content.clean_chapter_content(raw_content, title)
                 end
                 if is_img then
                     table.insert(parts, next_tag)
+                    img_stats.inner = img_stats.inner + 1
                 elseif is_br then
                     table.insert(parts, "<br/>")
                 end
@@ -623,6 +796,7 @@ function Content.clean_chapter_content(raw_content, title)
             end
             -- 直接输出 img 标签本身，不包外层 p
             table.insert(lines, img_tag)
+            img_stats.fallback = img_stats.fallback + 1
             scan = img_end + 1
         end
         paragraphs = lines
@@ -642,6 +816,23 @@ function Content.clean_chapter_content(raw_content, title)
 
     if logger and comment_count > 0 then
         logger.info(LOG_MODULE, "[段评] 气泡还原: restored=" .. restored_count .. "/" .. comment_count)
+    end
+
+    -- 图片追踪汇总：对比清洗前后的 <img> 数量，定位"正文插图被清洗"问题
+    if logger then
+        local img_after = 0
+        for _ in result:gmatch("<[iI][mM][gG][^>]*/?>") do
+            img_after = img_after + 1
+        end
+        local found_total = img_stats.before + img_stats.inner + img_stats.tail + img_stats.fallback
+        logger.warn(LOG_MODULE, "[图片] clean_chapter_content: input=" .. img_before_clean
+            .. " output=" .. img_after
+            .. " found{before=" .. img_stats.before
+            .. " inner=" .. img_stats.inner
+            .. " tail=" .. img_stats.tail
+            .. " fallback=" .. img_stats.fallback
+            .. " total=" .. found_total .. "}"
+            .. (img_before_clean ~= img_after and " <<< 图片丢失!" or " OK"))
     end
 
     return result
@@ -851,9 +1042,10 @@ function Content.download_remote_images(client, xhtml, used_names, progress)
     used_names = used_names or {}
     local source_map = {}  -- maps URL -> local href
 
-    local summary = { total = 0, downloaded = 0, failed = 0 }
+    local summary = { total = 0, downloaded = 0, failed = 0, data_uri = 0, total_found = 0 }
 
     xhtml = tostring(xhtml or ""):gsub("<[iI][mM][gG]([^>]*)>", function(attrs)
+        summary.total_found = summary.total_found + 1
         -- Find the best source URL
         local srcset = image_attr(attrs, "srcset")
         local source = image_attr(attrs, "data%-src")
@@ -874,6 +1066,7 @@ function Content.download_remote_images(client, xhtml, used_names, progress)
 
         -- Skip data: URIs
         if clean_source:lower():match("^data:") then
+            summary.data_uri = summary.data_uri + 1
             return "<img" .. attrs .. ">"
         end
 
@@ -949,6 +1142,14 @@ function Content.download_remote_images(client, xhtml, used_names, progress)
         end
         return "<img" .. image_set_local_src(attrs, local_src) .. ">"
     end)
+
+    if logger then
+        logger.warn(LOG_MODULE, "[图片] download_remote_images: found=" .. summary.total_found
+            .. " data_uri_skipped=" .. summary.data_uri
+            .. " remote_total=" .. summary.total
+            .. " downloaded=" .. summary.downloaded
+            .. " failed=" .. summary.failed)
+    end
 
     return xhtml, assets, summary
 end
@@ -1099,6 +1300,22 @@ function Content.save_chapter_html(settings, book, chapter, xhtml, assets, css)
     -- 3. Extract body fragment (already has images processed by download_remote_images)
     local body = body_fragment(xhtml)
 
+    -- 图片追踪：body_fragment 前后的 <img> 数量对比
+    if logger then
+        local img_before_fragment = 0
+        for _ in tostring(xhtml):gmatch("<[iI][mM][gG][^>]*/?>") do
+            img_before_fragment = img_before_fragment + 1
+        end
+        local img_after_fragment = 0
+        for _ in body:gmatch("<[iI][mM][gG][^>]*/?>") do
+            img_after_fragment = img_after_fragment + 1
+        end
+        if img_before_fragment ~= img_after_fragment then
+            logger.warn(LOG_MODULE, "[图片] save_chapter_html body_fragment: 输入=" .. img_before_fragment
+                .. " 输出=" .. img_after_fragment .. " <<< body_fragment 丢失图片!")
+        end
+    end
+
     -- 4. Process <img> tags in the body:
     --    (a) downloaded src -> embed as base64 data URI (preferred)
     --    (b) everything else: decode HTML entities in the src URL (&amp; -> &) so online links work
@@ -1189,22 +1406,22 @@ function Content.fetch_chapter_html(client, settings, book, chapter, opts)
 
     -- 段评气泡 CSS（简洁上标数字，墨水屏黑白兼容，无动画无倾斜）
     local css = [[
-body { font-size: 1.05em; }
-
-/* 纯图片段落：去除首行缩进，居中显示 */
-p.img-p {
-  text-indent: 0 !important;
-  text-align: center;
-  margin: 0.5em 0;
+body { font-size: 1em; }
+p{
+   text-indent: 2em;
 }
-p.img-p img {
+
+
+img {
+  display: block;
+  margin: 0 auto;
   max-width: 100%;
   height: auto;
 }
 
 /* 段评数字：上标小号数字，点击触发 onGotoLink */
 a.para-comment {
-  font-size: 0.5em;
+  font-size: 0.5em !important;
   vertical-align: super;
   text-decoration: none;
   margin-left: 2px;
