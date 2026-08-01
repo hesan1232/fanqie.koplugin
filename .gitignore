@@ -12,3 +12,6 @@ Thumbs.db
 
 # Test files - not included in release
 tests/
+
+# Release package - distributed via GitHub Releases, not tracked in VCS
+fanqie.koplugin.zip
