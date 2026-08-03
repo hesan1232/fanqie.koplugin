@@ -11,18 +11,27 @@ local M = {
     cached_chapter_index = {},
     toc_menu_open = false,
     pre_download_triggered = false,
+    -- 预下载独立标志：不阻塞用户阅读（与 is_downloading 区分）
+    -- is_downloading 仅用于用户主动下载（手动下载/跳章下载），会阻塞 navigateToChapter
+    -- pre_downloading 用于后台预下载，不阻塞阅读，但会被 is_downloading 中断
+    pre_downloading = false,
     active_menu = nil,
     detail_dialog = nil,
     is_downloading = false,
     last_page_number = nil,
     start_of_chapter_triggered = false,
     document_opened = false,
+    -- onEndOfBook 异步跳章重入保护：异步下载下一章期间为 true，抑制末页重复触发
+    end_of_book_jumping = false,
     -- 段评相关状态
     enable_review = false,           -- 段评开关
     current_para_reviews = {},      -- 当前章节的段评数据
     current_para_index = 0,         -- 当前选中的段评索引
     -- 内部引用：可选，用于持久化段评开关
     _settings_ref = nil,
+    -- 下载管理状态
+    download_task = nil,  -- 当前下载任务 { book_id, book_title, current, total, status, start_time }
+    download_history = {}, -- 最近完成的下载任务
 }
 
 -- 将段评开关从 Settings 加载到全局内存状态（启动时调用一次）
@@ -36,12 +45,66 @@ function M.loadReviewState(settings)
     else
         M.enable_review = false
     end
+    -- 加载持久化的下载历史和任务状态
+    M.loadDownloadState()
 end
 
 -- 把 enable_review 持久化到 Settings（若 settings 可用）
 local function persist_review_state(enabled)
     if not M._settings_ref then return end
     pcall(function() M._settings_ref:setParaReviewEnabled(enabled == true) end)
+end
+
+-- ===== 下载状态持久化 =====
+-- 持久化下载历史到文件（避免 KOReader 退出后丢失）
+local function persist_download_history()
+    if not M._settings_ref then return end
+    pcall(function()
+        M._settings_ref:set("download_history", M.download_history)
+        M._settings_ref:flush()
+    end)
+end
+
+-- 持久化当前下载任务到文件
+local function persist_download_task()
+    if not M._settings_ref then return end
+    pcall(function()
+        M._settings_ref:set("download_task", M.download_task)
+        M._settings_ref:flush()
+    end)
+end
+
+-- 从文件加载下载历史和任务状态（启动时调用）
+-- 如果发现"正在下载"的任务（说明上次退出时下载未完成），标记为"中断"并归入历史
+M.loadDownloadState = function()
+    if not M._settings_ref then return end
+    -- 加载历史记录
+    local ok_h, history = pcall(function() return M._settings_ref:get("download_history") end)
+    if ok_h and type(history) == "table" then
+        M.download_history = history
+    end
+    -- 加载未完成的下载任务
+    local ok_t, task = pcall(function() return M._settings_ref:get("download_task") end)
+    print("[FanQie][state] loadDownloadState: history_count=" .. tostring(#M.download_history)
+        .. " persisted_task=" .. tostring(task and task.book_title or "nil")
+        .. " task_status=" .. tostring(task and task.status or "nil"))
+    if ok_t and task and task.status == "downloading" then
+        -- 上次退出时下载未完成，标记为"中断"
+        task.status = "interrupted"
+        task.end_time = os.time()
+        table.insert(M.download_history, 1, task)
+        while #M.download_history > 10 do
+            table.remove(M.download_history)
+        end
+        M.download_task = nil
+        M.is_downloading = false
+        persist_download_history()
+        persist_download_task()
+        print("[FanQie][state] loadDownloadState: found interrupted task, moved to history")
+    elseif ok_t and task then
+        M.download_task = task
+        M.is_downloading = task.status == "downloading"
+    end
 end
 
 M.isCurrentDocFanqie = function(file_path)
@@ -159,6 +222,57 @@ end
 M.clearParaReviews = function()
     M.current_para_reviews = {}
     M.current_para_index = 0
+end
+
+-- 下载管理
+M.setDownloadTask = function(task)
+    M.download_task = task
+    M.is_downloading = task and true or false
+    persist_download_task()
+    print("[FanQie][state] setDownloadTask: " .. (task and task.book_title or "nil")
+        .. " status=" .. (task and task.status or "nil"))
+end
+
+M.getDownloadTask = function()
+    return M.download_task
+end
+
+M.updateDownloadProgress = function(current, total, chapter)
+    if M.download_task then
+        M.download_task.current = current
+        M.download_task.total = total
+        M.download_task.chapter = chapter
+    end
+end
+
+M.clearDownloadTask = function()
+    print("[FanQie][state] clearDownloadTask: was=" .. tostring(M.download_task and M.download_task.book_title or "nil"))
+    M.download_task = nil
+    M.is_downloading = false
+    persist_download_task()
+end
+
+M.addDownloadHistory = function(task)
+    if not task then return end
+    task.end_time = os.time()
+    table.insert(M.download_history, 1, task)
+    -- 只保留最近 10 条
+    while #M.download_history > 10 do
+        table.remove(M.download_history)
+    end
+    persist_download_history()
+    print("[FanQie][state] addDownloadHistory: " .. tostring(task.book_title)
+        .. " status=" .. tostring(task.status)
+        .. " history_count=" .. tostring(#M.download_history))
+end
+
+M.getDownloadHistory = function()
+    return M.download_history or {}
+end
+
+M.clearDownloadHistory = function()
+    M.download_history = {}
+    persist_download_history()
 end
 
 return M

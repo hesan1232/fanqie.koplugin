@@ -1,6 +1,9 @@
 # Local config with real Cookie - keep config.example.lua in VCS, ignore config.lua
 config.lua
 
+# Architecture design doc - internal reference, not distributed
+ARCHITECTURE.md
+
 # KOReader / Lua runtime artifacts
 *.luac
 /.cache/

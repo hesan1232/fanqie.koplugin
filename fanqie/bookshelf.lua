@@ -16,6 +16,7 @@ local ok_H, H = pcall(require, "fanqie.helper")
 local ok_Log, Log = pcall(require, "fanqie.logger")
 local ok_Content, Content = pcall(require, "fanqie.content")
 local ok_state, _state = pcall(require, "fanqie.state")
+local ok_Async, Async = pcall(require, "fanqie.async")
 
 local function log_error(err)
     local text = tostring(err):gsub("[%c]+", " ")
@@ -37,49 +38,174 @@ local function display_error(err)
     return text
 end
 
+-- 书架持久化缓存：存为 Lua table 文件，离线时直接读
+local function get_shelf_cache_path(settings)
+    local cache_dir = settings and settings.get_download_dir and settings:get_download_dir() or ""
+    if cache_dir == "" then cache_dir = "./fanqie_cache" end
+    H.make_dir(cache_dir)
+    return cache_dir .. "/shelf_cache.lua"
+end
+
+local function save_shelf_cache(settings, books)
+    if not settings or not books or type(books) ~= "table" then return end
+    local path = get_shelf_cache_path(settings)
+    local lines = { "return {" }
+    for i, b in ipairs(books) do
+        local parts = {}
+        for k, v in pairs(b) do
+            if type(v) == "string" then
+                -- 完整转义：\ " \n \r \t，避免书名含特殊字符导致缓存文件语法错误
+                local escaped = v:gsub("\\", "\\\\")
+                    :gsub('"', '\\"')
+                    :gsub("\n", "\\n")
+                    :gsub("\r", "\\r")
+                    :gsub("\t", "\\t")
+                table.insert(parts, string.format('%s="%s"', k, escaped))
+            elseif type(v) == "number" then
+                table.insert(parts, string.format('%s=%s', k, tostring(v)))
+            elseif type(v) == "boolean" then
+                table.insert(parts, string.format('%s=%s', k, tostring(v)))
+            end
+        end
+        table.insert(lines, "  {" .. table.concat(parts, ",") .. "},")
+    end
+    table.insert(lines, "}")
+    local f = io.open(path, "w")
+    if f then
+        f:write(table.concat(lines, "\n"))
+        f:close()
+        if Log then Log.info("shelf cache saved: " .. tostring(#books) .. " books to " .. path) end
+    else
+        if Log then Log.warn("shelf cache save failed: cannot open " .. path) end
+    end
+end
+
+local function load_shelf_cache(settings)
+    local path = get_shelf_cache_path(settings)
+    if not H or not H.file_exists or not H.file_exists(path) then
+        if Log then Log.info("shelf cache: file not found at " .. path) end
+        return nil
+    end
+    local ok, data = pcall(function()
+        local chunk, err = loadfile(path)
+        if not chunk then
+            if Log then Log.warn("shelf cache loadfile failed: " .. tostring(err)) end
+            return nil
+        end
+        return chunk()
+    end)
+    if ok and type(data) == "table" and #data > 0 then
+        if Log then Log.info("shelf cache loaded: " .. tostring(#data) .. " books") end
+        return data
+    end
+    if not ok then
+        if Log then Log.warn("shelf cache pcall failed: " .. tostring(data)) end
+    end
+    return nil
+end
+
 local Bookshelf = {}
 
 function Bookshelf:showBookshelf()
-    if not self:checkNetwork() then return end
     if not self.patches_ok then
         local Patches = require("patches.core")
         Patches.install()
         self.patches_ok = true
     end
-    self:showBusy(_("正在获取书架..."))
-    local ok, result = pcall(function()
-        return self:get_shelf()
-    end)
-    self:closeBusy()
-    if not ok then
-        if Log then Log.error("fetch shelf failed:", log_error(result)) end
-        self:showError(T(_("获取书架失败:\n%1"), display_error(result)))
-        return
-    end
-    if Log then Log.debug("shelf fetched:", #result, "books") end
-    if not result or #result == 0 then
-        self:showInfo(_("书架为空，请先在番茄小说App中添加书籍"))
-        return
-    end
 
     local sort_type = _state.shelf_sort_type or "default"
-    if sort_type ~= "default" then
-        table.sort(result, function(a, b)
-            if sort_type == "progress" then
-                return (a.progress or 0) < (b.progress or 0)
-            elseif sort_type == "added" then
-                return (a.added_time or 0) > (b.added_time or 0)
-            elseif sort_type == "read" then
-                return (a.last_read_time or 0) > (b.last_read_time or 0)
-            elseif sort_type == "title" then
-                return (a.title or "") < (b.title or "")
-            else
-                return true
-            end
-        end)
+    local function do_sort(books)
+        if sort_type ~= "default" then
+            table.sort(books, function(a, b)
+                if sort_type == "progress" then
+                    return (a.progress or 0) < (b.progress or 0)
+                elseif sort_type == "added" then
+                    return (a.added_time or 0) > (b.added_time or 0)
+                elseif sort_type == "read" then
+                    return (a.last_read_time or 0) > (b.last_read_time or 0)
+                elseif sort_type == "title" then
+                    return (a.title or "") < (b.title or "")
+                else
+                    return true
+                end
+            end)
+        end
     end
 
-    self:showBookList(result)
+    -- 优先显示本地缓存，有网后台刷新
+    local cached_shelf = load_shelf_cache(self.settings)
+    if cached_shelf and #cached_shelf > 0 then
+        do_sort(cached_shelf)
+        self:showBookList(cached_shelf)
+        -- 后台异步刷新
+        if self:checkNetwork() then
+            self:showBusy(_("正在刷新书架..."))
+            local plugin = self
+            if ok_Async and Async then
+                Async.run(function()
+                    return plugin:get_shelf()
+                end, function(ok, result, err)
+                    plugin:closeBusy()
+                    if ok and type(result) == "table" and #result > 0 then
+                        save_shelf_cache(plugin.settings, result)
+                        do_sort(result)
+                        plugin:showBookList(result)
+                    end
+                end, { poll_interval = 0.3, timeout = 60 })
+            end
+        end
+        return
+    end
+
+    -- 无缓存 + 有网：正常获取
+    if not self:checkNetwork() then
+        self:showError(_("无网络且无书架缓存，请先联网获取书架"))
+        return
+    end
+
+    self:showBusy(_("正在获取书架..."))
+    local plugin = self
+    if ok_Async and Async then
+        Async.run(function()
+            return plugin:get_shelf()
+        end, function(ok, result, err)
+            plugin:closeBusy()
+            if not ok or type(result) ~= "table" then
+                if Log then Log.error("fetch shelf failed:", log_error(err or result)) end
+                plugin:showError(T(_("获取书架失败:\n%1"), display_error(err or result)))
+                return
+            end
+            if Log then Log.debug("shelf fetched:", #result, "books") end
+            if not result or #result == 0 then
+                plugin:showInfo(_("书架为空，请先在番茄小说App中添加书籍"))
+                return
+            end
+
+            save_shelf_cache(plugin.settings, result)
+            do_sort(result)
+            plugin:showBookList(result)
+        end, { poll_interval = 0.3, timeout = 60 })
+    else
+        -- Async 模块不可用时降级为同步
+        local ok, result = pcall(function()
+            return self:get_shelf()
+        end)
+        self:closeBusy()
+        if not ok then
+            if Log then Log.error("fetch shelf failed:", log_error(result)) end
+            self:showError(T(_("获取书架失败:\n%1"), display_error(result)))
+            return
+        end
+        if Log then Log.debug("shelf fetched:", #result, "books") end
+        if not result or #result == 0 then
+            self:showInfo(_("书架为空，请先在番茄小说App中添加书籍"))
+            return
+        end
+
+        save_shelf_cache(self.settings, result)
+        do_sort(result)
+        self:showBookList(result)
+    end
 end
 
 function Bookshelf:get_shelf(force_refresh)
@@ -170,15 +296,6 @@ function Bookshelf:showBookList(books)
 end
 
 function Bookshelf:showBookDetail(book)
-    local ok, chapters = pcall(function()
-        return self:get_chapters(book.book_id)
-    end)
-    if not ok then
-        if Log then Log.error("fetch chapters failed:", log_error(chapters)) end
-        self:showError(T(_("获取目录失败:\n%1"), display_error(chapters)))
-        return
-    end
-
     local progress_text = ""
     if book.progress then
         progress_text = string.format(_("已读 %.1f%%"), book.progress * 100)
@@ -186,6 +303,38 @@ function Bookshelf:showBookDetail(book)
     local chapter_text = ""
     if book.read_chapters and book.total_chapters then
         chapter_text = string.format(_("%d/%d章"), book.read_chapters, book.total_chapters)
+    end
+
+    -- 异步获取目录，UI 保持响应
+    local self_ref = self
+    local book_id = book.book_id
+    local client = self.client
+    local settings = self.settings
+    local Async_mod = Async
+
+    local function fetch_chapters_async(callback)
+        if ok_Async and Async_mod then
+            Async_mod.run(function()
+                return self_ref:get_chapters(book_id)
+            end, function(ok, result, err)
+                if not ok or type(result) ~= "table" then
+                    if Log then Log.error("fetch chapters failed:", log_error(err or result)) end
+                    self_ref:showError(T(_("获取目录失败:\n%1"), display_error(err or result)))
+                    return
+                end
+                callback(result)
+            end, { poll_interval = 0.3, timeout = 60 })
+        else
+            local ok, result = pcall(function()
+                return self_ref:get_chapters(book_id)
+            end)
+            if not ok or type(result) ~= "table" then
+                if Log then Log.error("fetch chapters failed:", log_error(result)) end
+                self_ref:showError(T(_("获取目录失败:\n%1"), display_error(result)))
+                return
+            end
+            callback(result)
+        end
     end
 
     local items = {
@@ -207,26 +356,53 @@ function Bookshelf:showBookDetail(book)
             text = _("下载"),
             callback = function()
                 UIManager:close(self.book_detail_menu)
-                self:downloadBook(book)
+                self:showBusy(_("正在获取目录..."))
+                fetch_chapters_async(function(chapters)
+                    self_ref:closeBusy()
+                    require("fanqie.download").showOptionsDialog(self_ref, book, chapters)
+                end)
             end,
         },
         {
             text = _("刷新进度"),
             callback = function()
                 UIManager:close(self.book_detail_menu)
-                local ok, books = pcall(function()
-                    return self:get_shelf(true)
-                end)
-                if ok and #books > 0 then
-                    for _, b in ipairs(books) do
-                        if b.book_id == book.book_id then
-                            self:showBookDetail(b)
-                            break
+                self:showBusy(_("正在刷新进度..."))
+                fetch_chapters_async(function()
+                    -- 复用 get_shelf 异步
+                    if ok_Async and Async_mod then
+                        Async_mod.run(function()
+                            return self_ref:get_shelf(true)
+                        end, function(ok, books, err)
+                            self_ref:closeBusy()
+                            if ok and type(books) == "table" and #books > 0 then
+                                for _, b in ipairs(books) do
+                                    if b.book_id == book_id then
+                                        self_ref:showBookDetail(b)
+                                        break
+                                    end
+                                end
+                            else
+                                self_ref:showError(T(_("刷新失败:\n%1"), display_error(err or books)))
+                            end
+                        end, { poll_interval = 0.3, timeout = 60 })
+                    else
+                        local ok, books = pcall(function()
+                            return self_ref:get_shelf(true)
+                        end)
+                        self_ref:closeBusy()
+                        if ok and type(books) == "table" and #books > 0 then
+                            for _, b in ipairs(books) do
+                                if b.book_id == book_id then
+                                    self_ref:showBookDetail(b)
+                                    break
+                                end
+                            end
+                        else
+                            self_ref:showError(T(_("刷新失败:\n%1"), display_error(books)))
                         end
                     end
-                else
-                    self:showError(T(_("刷新失败:\n%1"), display_error(books)))
-                end
+                end)
             end,
         },
     }
@@ -234,7 +410,7 @@ function Bookshelf:showBookDetail(book)
     self.book_detail_menu = Menu:new{
         title = book.title,
         subtitle = progress_text .. (chapter_text ~= "" and (" " .. chapter_text) or ""),
-        items = items,
+        item_table = items,
         is_borderless = true,
         width = Screen:getWidth() - 40,
         height = Screen:getHeight() - 100,
@@ -246,15 +422,50 @@ function Bookshelf:showBookDetail(book)
 end
 
 function Bookshelf:showChapterListing(book)
-    local ok, chapters = pcall(function()
-        return self:get_chapters(book.book_id)
-    end)
-    if not ok then
-        if Log then Log.error("fetch chapters failed:", log_error(chapters)) end
-        self:showError(T(_("获取目录失败:\n%1"), display_error(chapters)))
-        return
+    local self_ref = self
+    local book_id = book.book_id
+    local Async_mod = Async
+
+    local function fetch_and_display()
+        self:showBusy(_("正在获取目录..."))
+        if ok_Async and Async_mod then
+            Async_mod.run(function()
+                return self_ref:get_chapters(book_id)
+            end, function(ok, chapters, err)
+                self_ref:closeBusy()
+                if not ok or type(chapters) ~= "table" then
+                    if Log then Log.error("fetch chapters failed:", log_error(err or chapters)) end
+                    self_ref:showError(T(_("获取目录失败:\n%1"), display_error(err or chapters)))
+                    return
+                end
+                self_ref:_displayChapterListing(book, chapters)
+            end, { poll_interval = 0.3, timeout = 60 })
+        else
+            local ok, chapters = pcall(function()
+                return self_ref:get_chapters(book_id)
+            end)
+            self:closeBusy()
+            if not ok or type(chapters) ~= "table" then
+                if Log then Log.error("fetch chapters failed:", log_error(chapters)) end
+                self:showError(T(_("获取目录失败:\n%1"), display_error(chapters)))
+                return
+            end
+            self:_displayChapterListing(book, chapters)
+        end
     end
 
+    -- 检查是否有缓存目录
+    local cached = Content.load_catalog_cache and Content.load_catalog_cache(self.settings, book_id) or nil
+    if cached and #cached > 0 then
+        self:_displayChapterListing(book, cached)
+        -- 后台刷新
+        fetch_and_display()
+    else
+        fetch_and_display()
+    end
+end
+
+function Bookshelf:_displayChapterListing(book, chapters)
     local cached = self.settings:get("cached_chapter_index." .. book.book_id, {})
 
     local items = {}
@@ -274,7 +485,7 @@ function Bookshelf:showChapterListing(book)
 
     self.chapter_list_menu = Menu:new{
         title = book.title,
-        items = items,
+        item_table = items,
         is_borderless = true,
         width = Screen:getWidth() - 40,
         height = Screen:getHeight() - 100,
@@ -336,99 +547,8 @@ function Bookshelf:downloadBook(book)
         self:showError(T(_("获取目录失败:\n%1"), display_error(chapters)))
         return
     end
-    self:showDownloadRangeDialog(book, chapters)
-end
-
-function Bookshelf:showDownloadRangeDialog(book, chapters)
-    local cached = self.settings:get("cached_chapter_index." .. book.book_id, {})
-    local cached_count = 0
-    for _ in pairs(cached) do cached_count = cached_count + 1 end
-
-    local dialog = InputDialog:new{
-        title = string.format(_("下载 %s"), book.title),
-        input_hint = string.format(_("章节范围 (如: 1-%d, 当前已下载 %d章)"), #chapters, cached_count),
-        input = "1-" .. tostring(#chapters),
-        buttons = {
-            {
-                text = _("取消"),
-                callback = function()
-                    UIManager:close(dialog)
-                end,
-            },
-            {
-                text = _("下载"),
-                callback = function()
-                    local input = dialog:getInputText()
-                    UIManager:close(dialog)
-                    local start_str, end_str = input:match("^(%d+)%s*-?%s*(%d*)$")
-                    local start_idx = tonumber(start_str)
-                    local end_idx = tonumber(end_str) or #chapters
-                    if start_idx and start_idx >= 1 and end_idx >= start_idx and end_idx <= #chapters then
-                        self:doDownloadBook(book, chapters, start_idx, end_idx)
-                    else
-                        self:showError(_("无效的章节范围"))
-                    end
-                end,
-            },
-        },
-    }
-    UIManager:show(dialog)
-end
-
-function Bookshelf:doDownloadBook(book, chapters, start_idx, end_idx)
-    local DownloadProgress = require("fanqie.download_progress")
-    local dialog = DownloadProgress:new{
-        title = string.format(_("下载 %s"), book.title),
-    }
-    dialog:show()
-
-    local downloaded = 0
-    local failed = 0
-    local total = end_idx - start_idx + 1
-    dialog:setState{stage = "prepare", current = 0, total = total}
-
-    for i = start_idx, end_idx do
-        if dialog:isCanceled() then
-            break
-        end
-        local chapter = chapters[i]
-        local chapter_title = chapter.title or string.format(_("第%d章"), i)
-        dialog:setState{
-            stage = "content",
-            current = downloaded,
-            total = total,
-            chapter = chapter_title,
-        }
-        local ok, path = pcall(function()
-            local b = { book_id = book.book_id, title = book.title, author = book.author }
-            -- 段评模式：传递 review=true
-            local ok_state, st = pcall(require, "fanqie.state")
-            local review_enabled = ok_state and st and st.isReviewEnabled and st.isReviewEnabled() or false
-            local fetch_opts = review_enabled and { review = true } or nil
-            return require("fanqie.content").fetch_chapter_html(self.client, self.settings, b, chapter, fetch_opts)
-        end)
-        if ok then
-            downloaded = downloaded + 1
-        else
-            failed = failed + 1
-            if Log then Log.warn("chapter download failed:", chapter_title, path) end
-        end
-        dialog:setState{
-            stage = "content",
-            current = downloaded,
-            total = total,
-            chapter = chapter_title,
-        }
-        if i < end_idx then
-            util.sleep(0.5)
-        end
-    end
-    dialog:close()
-    local msg = string.format(_("下载完成: %d/%d"), downloaded, total)
-    if failed > 0 then
-        msg = msg .. string.format(_(" (失败 %d 章)"), failed)
-    end
-    self:showInfo(msg)
+    -- 书架下载：不传 current_index（无"当前阅读后N章"/"剩余全部"选项）
+    require("fanqie.download").showOptionsDialog(self, book, chapters)
 end
 
 return Bookshelf

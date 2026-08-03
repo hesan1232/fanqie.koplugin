@@ -9,15 +9,29 @@ local ok_H, H = pcall(require, "fanqie.helper")
 local ok_Log, Log = pcall(require, "fanqie.logger")
 local ok_Content, Content = pcall(require, "fanqie.content")
 local ok_state, _state = pcall(require, "fanqie.state")
+local ok_Async, Async = pcall(require, "fanqie.async")
+local ok_SM, SM = pcall(require, "fanqie.sources")
 
 local ReaderNavigation = {}
 
 function ReaderNavigation:navigateToChapter(book, chapters, chapter_index, opts)
     opts = opts or {}
     local chapter = chapters[chapter_index]
-    if not chapter then return false end
+    if not chapter then
+        self:showInfo(_("章节不存在"))
+        return false
+    end
+
+    -- 中断预下载（后台预下载不应阻塞用户阅读）
+    -- 预下载的 on_done 会检查 pre_download_triggered，若为 false 则停止调度
+    if _state.pre_download_triggered then
+        _state.pre_download_triggered = false
+        if Log then Log.info("navigateToChapter: aborting pre-download for user navigation") end
+    end
 
     if _state.is_downloading then
+        -- 用户主动下载进行中：给用户明确提示
+        self:showInfo(_("正在下载中，请稍候再试"))
         return false
     end
 
@@ -26,11 +40,12 @@ function ReaderNavigation:navigateToChapter(book, chapters, chapter_index, opts)
 
     -- 从全局状态获取段评开关
     local review_enabled = _state.isReviewEnabled()
-    local fetch_opts = review_enabled and { review = true } or nil
+    local fetch_opts = { skip_cache_index = true }
+    if review_enabled then fetch_opts.review = true end
 
     local item_id = tostring(chapter.itemId)
     local existing_path = nil
-    
+
     if book.cached_chapters then
         existing_path = book.cached_chapters[item_id]
     else
@@ -82,19 +97,32 @@ function ReaderNavigation:navigateToChapter(book, chapters, chapter_index, opts)
     _state.is_downloading = true
     self:showBusy(T(_("正在下载: %s"), chapter.title or ""))
 
-    UIManager:scheduleIn(0.1, function()
-        local ok, result = pcall(function()
-            local b = { book_id = book.book_id, title = book.title, author = book.author }
-            local path, ch, para_reviews = Content and Content.fetch_chapter_html(self.client, self.settings, b, chapter, fetch_opts)
-            return { path = path, para_reviews = para_reviews }
-        end)
-        self:closeBusy()
+    local self_ref = self
+    local b = { book_id = book.book_id, title = book.title, author = book.author }
+    local client = self.client
+    local settings = self.settings
 
-        if not ok then
-            if Log then Log.error("navigateToChapter download failed:", tostring(result)) end
+    local work_fn = function()
+        local path, ch, para_reviews, rate_info = Content and Content.fetch_chapter_html(
+            client, settings, b, chapter, fetch_opts
+        )
+        return { path = path, para_reviews = para_reviews, rate_info = rate_info }
+    end
+
+    local function on_done(ok, result, err)
+        self_ref:closeBusy()
+
+        if not ok or type(result) ~= "table" or not result.path then
+            if Log then Log.error("navigateToChapter download failed:", tostring(err or result)) end
             _state.is_downloading = false
-            self:showError(T(_(opts.error_message or "下载章节失败:\n%1"), self:displayError(result)))
+            self_ref:showError(T(_(opts.error_message or "下载章节失败:\n%1"),
+                self_ref:displayError(err or result)))
             return
+        end
+
+        -- 合并子进程限流时间戳（子进程会随退出丢失）
+        if result.rate_info and ok_SM and SM and SM.merge_rate_limit_timestamps then
+            SM.merge_rate_limit_timestamps(result.rate_info)
         end
 
         local path = result.path
@@ -102,6 +130,13 @@ function ReaderNavigation:navigateToChapter(book, chapters, chapter_index, opts)
 
         book.cached_chapters = book.cached_chapters or {}
         book.cached_chapters[item_id] = path
+
+        -- 持久化 cache_index
+        if Content and Content.save_cache_index then
+            local cc = Content.load_cache_index(settings, book.book_id) or {}
+            cc[item_id] = path
+            Content.save_cache_index(settings, book.book_id, cc)
+        end
 
         -- 存储段评数据到全局状态
         if review_enabled and para_reviews then
@@ -111,12 +146,20 @@ function ReaderNavigation:navigateToChapter(book, chapters, chapter_index, opts)
         _state.current_chapter_index = chapter_index
         _state.pre_download_triggered = false
         _state.is_downloading = false
-        self:showReaderUI(path, chapter)
+        self_ref:showReaderUI(path, chapter)
 
         if opts.after_navigate then
             UIManager:scheduleIn(1.0, opts.after_navigate)
         end
-    end)
+    end
+
+    if ok_Async and Async and Async.run then
+        Async.run(work_fn, on_done, { poll_interval = 0.125, timeout = 120 })
+    else
+        -- 降级：同步执行
+        local ok_sync, res = pcall(work_fn)
+        on_done(ok_sync, res, ok_sync and nil or res)
+    end
 
     return true
 end
@@ -130,7 +173,11 @@ end
 function ReaderNavigation:showReaderUI(path, chapter)
     _state.current_document_path = path
     local ReaderUI = require("apps/reader/readerui")
-    ReaderUI:showReader(path)
+    if ReaderUI.instance then
+        ReaderUI.instance:switchDocument(path, true)  -- seamless=true 隐藏"打开文件"提示
+    else
+        ReaderUI:showReader(path, nil, true)  -- seamless=true 隐藏"打开文件"提示
+    end
 end
 
 function ReaderNavigation:preDownloadChapters(book, chapters, current_index)
@@ -143,51 +190,138 @@ function ReaderNavigation:preDownloadChapters(book, chapters, current_index)
     local end_idx = math.min(current_index + pre_download_count, #chapters)
 
     if start_idx > end_idx then
+        _state.pre_download_triggered = false
         return
     end
-    
-    local review_enabled = _state.isReviewEnabled()
-    local fetch_opts = review_enabled and { review = true } or nil
 
-    UIManager:scheduleIn(1.0, function()
-        for i = start_idx, end_idx do
-            if _state.is_downloading then
-                break
+    local review_enabled = _state.isReviewEnabled()
+    local fetch_opts = review_enabled and { review = true, skip_cache_index = true } or { skip_cache_index = true }
+    local self_ref = self
+    local client = self.client
+    local settings = self.settings
+    local b = { book_id = book.book_id, title = book.title, author = book.author }
+
+    -- 递归异步下载：每次下载一章 -> 检查取消/限流 -> 下载下一章
+    local function download_one(idx)
+        if idx > end_idx then
+            _state.pre_download_triggered = false
+            _state.pre_downloading = false
+            return
+        end
+
+        -- 如果被用户操作中断（navigateToChapter 设置 pre_download_triggered=false），停止
+        if not _state.pre_download_triggered then
+            _state.pre_downloading = false
+            if Log then Log.info("pre-download: aborted by user navigation") end
+            return
+        end
+
+        -- 如果用户主动下载（手动下载/跳章下载），中断预下载，让用户操作优先
+        if _state.is_downloading then
+            _state.pre_download_triggered = false
+            _state.pre_downloading = false
+            if Log then Log.info("pre-download: aborted, user download in progress") end
+            return
+        end
+
+        local chapter = chapters[idx]
+        local item_id = tostring(chapter.itemId)
+
+        -- 检查是否已缓存
+        local cached_chapters = book.cached_chapters or Content.load_cache_index(settings, book.book_id) or {}
+        local existing_path = cached_chapters[item_id]
+
+        -- 如果段评开启，还需检查是否有段评数据
+        if existing_path and review_enabled then
+            local existing_reviews = Content and Content.load_para_reviews_index(settings, book.book_id, item_id) or {}
+            if #existing_reviews == 0 then
+                existing_path = nil  -- 没有段评数据，需要重新获取
             end
-            local chapter = chapters[i]
-            local item_id = tostring(chapter.itemId)
-            local existing_path = nil
-            if book.cached_chapters then
-                existing_path = book.cached_chapters[item_id]
-            else
-                local cached = _state.getChapterIndexCache(book.book_id)
-                existing_path = cached and cached[item_id]
-            end
-            -- 如果段评开启，还需检查是否有段评数据
-            if existing_path and review_enabled then
-                local existing_reviews = Content and Content.load_para_reviews_index(self.settings, book.book_id, item_id) or {}
-                if #existing_reviews == 0 then
-                    existing_path = nil  -- 没有段评数据
+        end
+
+        if existing_path and H and H.file_exists(existing_path) then
+            -- 已缓存，跳过
+            if Log then Log.info("pre-download: skipping cached chapter", idx) end
+            UIManager:scheduleIn(0, function() download_one(idx + 1) end)
+            return
+        end
+
+        -- 限流预检：检查所有活跃源是否可用
+        if ok_SM and SM then
+            local sources = SM.get_active_sources(settings)
+            if #sources > 0 then
+                local any_ok = false
+                local max_wait = 0
+                for _, src in ipairs(sources) do
+                    local rl = src.config.rate_limit or {}
+                    local rl_ok, wait = SM.rate_limit_peek(src.id, rl.max_requests, rl.window_seconds)
+                    if rl_ok then any_ok = true; break end
+                    if wait and wait > max_wait then max_wait = wait end
                 end
-            end
-            if not existing_path or not H.file_exists(existing_path) then
-                if Log then Log.info("pre-download: downloading chapter", i) end
-                local ok, result = pcall(function()
-                    local b = { book_id = book.book_id, title = book.title, author = book.author }
-                    return Content.fetch_chapter_html(self.client, self.settings, b, chapter, fetch_opts)
-                end)
-                if ok then
-                    book.cached_chapters = book.cached_chapters or {}
-                    book.cached_chapters[item_id] = result
-                    if Log then Log.info("pre-download: completed chapter", i) end
-                else
-                    if Log then Log.warn("pre-download: failed chapter", i, tostring(result)) end
+                if not any_ok and max_wait > 0 then
+                    -- 所有源都被限流，等待后重试
+                    if Log then Log.info("pre-download: rate limited, waiting", max_wait, "s") end
+                    UIManager:scheduleIn(max_wait, function() download_one(idx) end)
+                    return
                 end
             end
         end
-        -- Reset flag so next chapter can trigger pre-download again
-        _state.pre_download_triggered = false
-    end)
+
+        -- 设置预下载标志（独立于 is_downloading，不阻塞用户阅读）
+        _state.pre_downloading = true
+
+        if Log then Log.info("pre-download: downloading chapter", idx) end
+
+        -- 异步下载（子进程执行 HTTP + IO）
+        local work_fn = function()
+            local path, ch, para_reviews, rate_info = Content.fetch_chapter_html(
+                client, settings, b, chapter, fetch_opts
+            )
+            return { path = path, item_id = item_id, rate_info = rate_info }
+        end
+
+        local function on_done(ok, result, err)
+            _state.pre_downloading = false
+
+            -- 如果已被中断，不继续调度
+            if not _state.pre_download_triggered then
+                if Log then Log.info("pre-download: interrupted, stop scheduling") end
+                return
+            end
+
+            if not ok or type(result) ~= "table" or not result.path then
+                if Log then Log.warn("pre-download: failed chapter", idx, tostring(err or result)) end
+            else
+                -- 更新缓存索引
+                cached_chapters[result.item_id] = result.path
+                book.cached_chapters = cached_chapters
+                if Content and Content.save_cache_index then
+                    Content.save_cache_index(settings, book.book_id, cached_chapters)
+                end
+
+                -- 合并子进程限流时间戳
+                if result.rate_info and ok_SM and SM and SM.merge_rate_limit_timestamps then
+                    SM.merge_rate_limit_timestamps(result.rate_info)
+                end
+
+                if Log then Log.info("pre-download: completed chapter", idx) end
+            end
+
+            -- 继续下一章
+            UIManager:scheduleIn(0.5, function() download_one(idx + 1) end)
+        end
+
+        if ok_Async and Async and Async.run then
+            Async.run(work_fn, on_done, { poll_interval = 0.125, timeout = 90 })
+        else
+            -- 降级：同步执行
+            local ok_sync, res = pcall(work_fn)
+            on_done(ok_sync, res, ok_sync and nil or res)
+        end
+    end
+
+    -- 延迟启动，给UI线程让出时间
+    UIManager:scheduleIn(1.0, function() download_one(start_idx) end)
 end
 
 function ReaderNavigation:getCurrentPageProgress()

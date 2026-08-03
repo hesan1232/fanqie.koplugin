@@ -1690,17 +1690,24 @@ function Client:get_chapter_content_with_fallback(book_id, item_id, opts)
         error("无可用书源（请在「设置 → 书源管理」中启用并配置至少一个源）")
     end
 
+    -- 本轮放行请求记录的时间戳，供子进程→父进程合并限流状态。
+    -- 子进程 fork 出 RATE_LIMIT_TIMESTAMPS 副本，记录的时间戳会随子进程退出丢失，
+    -- 需经此返回值带回父进程由 SourceManager.merge_rate_limit_timestamps 合并。
+    local recorded = {}
     local errors = {}
     for _, src in ipairs(sources) do
         local fetcher = self._source_fetchers[src.id]
         if fetcher then
             local rl = src.config.rate_limit or {}
-            local ok_rl, wait = SourceManager.rate_limit_check(src.id, rl.max_requests, rl.window_seconds)
+            local ok_rl, wait, ts = SourceManager.rate_limit_check(src.id, rl.max_requests, rl.window_seconds)
             if not ok_rl then
                 log_debug("[FanQie] 源被限流，跳过:",
                     "source=" .. src.id, "wait=" .. tostring(wait) .. "s")
                 table.insert(errors, src.id .. ": 限流中(需等" .. tostring(wait) .. "s)")
             else
+                if ts then
+                    table.insert(recorded, { source_id = src.id, ts = ts })
+                end
                 log_info("[FanQie] 尝试源:",
                     "source=" .. src.id, "itemId=" .. tostring(item_id))
                 local t_src = now_ms()
@@ -1712,7 +1719,8 @@ function Client:get_chapter_content_with_fallback(book_id, item_id, opts)
                         "elapsed=" .. string.format("%.0f", elapsed) .. "ms",
                         "itemId=" .. tostring(item_id),
                         "长度=" .. tostring(#result.content))
-                    return result, src.id
+                    -- 第3返回值 recorded：本轮记录的限流时间戳，供父进程合并
+                    return result, src.id, recorded
                 end
                 local err_msg = "未知错误"
                 if type(result) == "string" then

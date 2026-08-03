@@ -21,6 +21,7 @@ local _ = ok_gettext and gettext or function(text) return text end
 local DownloadProgress = InputContainer:extend{
     title = _("下载中"),
     on_cancel = nil,
+    on_background = nil,  -- 后台运行回调
 }
 
 local function clamp(v, lo, hi)
@@ -28,6 +29,18 @@ local function clamp(v, lo, hi)
     if v < lo then return lo end
     if v > hi then return hi end
     return v
+end
+
+-- 将秒数格式化为 "Xs" / "X分Y秒" / "X时Y分"
+local function formatEta(sec)
+    sec = math.max(0, math.floor(tonumber(sec) or 0))
+    if sec < 60 then return string.format("%ds", sec) end
+    local m = math.floor(sec / 60)
+    local s = sec % 60
+    if m < 60 then return string.format("%d分%d秒", m, s) end
+    local h = math.floor(m / 60)
+    m = m % 60
+    return string.format("%d时%d分", h, m)
 end
 
 function DownloadProgress:init()
@@ -91,18 +104,28 @@ function DownloadProgress:init()
         width = content_width,
         show_parent = self,
         zero_sep = true,
-        buttons = {{
+        buttons = {
             {
-                text = _("取消下载"),
-                callback = function()
-                    if self.cancelled then return end
-                    self.cancelled = true
-                    self.status_widget:setText(_("正在取消……"))
-                    self:_redraw()
-                    if self.on_cancel then self.on_cancel() end
-                end,
+                {
+                    text = _("后台运行"),
+                    callback = function()
+                        if self.on_background then
+                            self.on_background()
+                        end
+                    end,
+                },
+                {
+                    text = _("取消下载"),
+                    callback = function()
+                        if self.cancelled then return end
+                        self.cancelled = true
+                        self.status_widget:setText(_("正在取消……"))
+                        self:_redraw()
+                        if self.on_cancel then self.on_cancel() end
+                    end,
+                },
             },
-        }},
+        },
     }
     group[#group + 1] = self.buttons
 
@@ -146,6 +169,7 @@ function DownloadProgress:setState(state)
         prepare = _("准备下载"),
         catalog = _("读取目录"),
         content = _("获取章节正文"),
+        rate_limit = _("等待请求恢复"),
         done = _("下载完成"),
         error = _("下载失败"),
         cancelled = _("下载已取消"),

@@ -1169,7 +1169,8 @@ function Content.fetch_chapter_content(client, settings, book, chapter, opts)
 
     local t_fetch = now_ms()
     local fetch_opts = opts.review and { review = true } or nil
-    local result = client:get_chapter_content_with_fallback(book_id, item_id, fetch_opts)
+    -- 第3返回值 rate_info：本轮记录的限流时间戳，透传给 fetch_chapter_html → 父进程合并
+    local result, _src_id, rate_info = client:get_chapter_content_with_fallback(book_id, item_id, fetch_opts)
     local fetch_elapsed = now_ms() - t_fetch
 
     local content = result.content or ""
@@ -1249,11 +1250,12 @@ function Content.fetch_chapter_content(client, settings, book, chapter, opts)
 
     -- 段评数据从 result 中提取，存储到返回值中
     local para_reviews = result.para_reviews or {}
-    
+
     return '<?xml version="1.0" encoding="utf-8"?>\n'
         .. '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>' .. xml_escape(title) .. '</title></head>\n'
         .. '<body>\n' .. cleaned .. '\n</body></html>',
-        para_reviews
+        para_reviews,
+        rate_info
 end
 
 -- ---------------------------------------------------------------------------
@@ -1398,7 +1400,7 @@ function Content.fetch_chapter_html(client, settings, book, chapter, opts)
     local item_id = tostring(chapter.itemId)
 
     local t_fetch = now_ms()
-    local ok_fetch, xhtml, para_reviews = pcall(Content.fetch_chapter_content, client, settings, book, chapter, opts)
+    local ok_fetch, xhtml, para_reviews, rate_info = pcall(Content.fetch_chapter_content, client, settings, book, chapter, opts)
     local fetch_elapsed = now_ms() - t_fetch
     if not ok_fetch then
         error("fetch_chapter_content failed: " .. tostring(xhtml))
@@ -1459,9 +1461,14 @@ a.para-comment {
         Content.save_para_reviews_index(settings, book_id, item_id, para_reviews)
     end
 
-    local t_idx = now_ms()
-    Content.save_cache_index(settings, book_id, book.cached_chapters)
-    local idx_elapsed = now_ms() - t_idx
+    -- skip_cache_index：子进程异步下载时由父进程统一持久化 cache_index.lua，
+    -- 避免子进程与父进程争写共享索引文件导致丢条目。
+    local idx_elapsed = 0
+    if not opts.skip_cache_index then
+        local t_idx = now_ms()
+        Content.save_cache_index(settings, book_id, book.cached_chapters)
+        idx_elapsed = now_ms() - t_idx
+    end
 
     local total_elapsed = now_ms() - t_total
     if logger then
@@ -1475,7 +1482,7 @@ a.para-comment {
             "assets_count=" .. tostring(#assets))
     end
 
-    return path, chapter, para_reviews
+    return path, chapter, para_reviews, rate_info
 end
 
 -- 段评数据持久化：保存/加载每个章节的段评索引
