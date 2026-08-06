@@ -1608,6 +1608,13 @@ end
 
 
 function FanQiePlugin:showBookList(books)
+    -- 先关闭旧的书架菜单，避免后台刷新后两个书架 UI 叠在一起
+    if self.book_list_menu then
+        self:_cancelCoverLoading()
+        UIManager:close(self.book_list_menu)
+        self.book_list_menu = nil
+    end
+
     local cover_cache_dir = self.settings:get_download_dir() .. "/covers"
     if H then H.make_dir(cover_cache_dir) end
 
@@ -2269,12 +2276,12 @@ function FanQiePlugin:showReaderUI(path, chapter)
     local ReaderUI = require("apps/reader/readerui")
 
     local ok, err = pcall(function()
-        if ReaderUI.instance then
-            ReaderUI.instance:switchDocument(path, true)  -- seamless=true 隐藏"打开文件"提示
-        else
+        -- 不用 switchDocument（其内部先 onClose 再 showReader，中间 forceRePaint 会闪现书架）
+        -- 直接用 showReader：doShowReader 在 nextTick 中关闭旧实例并打开新实例，无闪现
+        if not ReaderUI.instance then
             UIManager:broadcastEvent(Event:new("SetupShowReader"))
-            ReaderUI:showReader(path, nil, true)  -- seamless=true 隐藏"打开文件"提示
         end
+        ReaderUI:showReader(path, nil, true)  -- seamless=true 隐藏"打开文件"提示
     end)
     if not ok then
         Log.error("showReaderUI failed:", log_error(err))

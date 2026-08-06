@@ -173,11 +173,12 @@ end
 function ReaderNavigation:showReaderUI(path, chapter)
     _state.current_document_path = path
     local ReaderUI = require("apps/reader/readerui")
-    if ReaderUI.instance then
-        ReaderUI.instance:switchDocument(path, true)  -- seamless=true 隐藏"打开文件"提示
-    else
-        ReaderUI:showReader(path, nil, true)  -- seamless=true 隐藏"打开文件"提示
+    -- 不用 switchDocument（其内部先 onClose 再 showReader，中间 forceRePaint 会闪现书架）
+    -- 直接用 showReader：doShowReader 在 nextTick 中关闭旧实例并打开新实例，无闪现
+    if not ReaderUI.instance then
+        UIManager:broadcastEvent(Event:new("SetupShowReader"))
     end
+    ReaderUI:showReader(path, nil, true)  -- seamless=true 隐藏"打开文件"提示
 end
 
 function ReaderNavigation:preDownloadChapters(book, chapters, current_index)
