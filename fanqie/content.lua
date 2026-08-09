@@ -501,7 +501,8 @@ function Content.clean_chapter_content(raw_content, title)
 
     -- 移除不可见字符（零宽空格、BOM、软连字符、双向控制符等，晴天/大灰狼广告中大量掺杂）
     -- U+200B-200F, U+2028-202E, U+FEFF, U+00AD
-    content = content:gsub("\226\128[\139\142\143\144\145\146\147\148\149\150\151\152\153\154\155\156\157\158]", "")
+    content = content:gsub("\226\128[\139\140\141\142\143]", "")  -- U+200B-200F 零宽空格/方向标记
+    content = content:gsub("\226\128[\168\169\170\171\172\173\174]", "")  -- U+2028-202E 行/段分隔符与双向控制符
     content = content:gsub("\194\173", "")  -- U+00AD 软连字符
     content = content:gsub("\239\187\191", "")  -- U+FEFF BOM
 

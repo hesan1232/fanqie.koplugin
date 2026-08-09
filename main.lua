@@ -770,6 +770,33 @@ function FanQiePlugin:getSettingsMenuItems()
             end,
         },
         {
+            text = _("扫码登录"),
+            keep_menu_open = false,
+            callback = function()
+                local QRLogin = require("fanqie.qrlogin")
+                local qr = QRLogin:new(self.client, self.settings, self)
+                qr:start()
+            end,
+        },
+        {
+            text = _("退出登录"),
+            enabled_func = function()
+                return self.settings:is_cookie_configured()
+            end,
+            keep_menu_open = true,
+            callback = function()
+                UIManager:show(ConfirmBox:new{
+                    text = _("确定退出登录？将清除已保存的 Cookie。"),
+                    ok_text = _("退出登录"),
+                    ok_callback = function()
+                        self.settings:set("cookies", {})
+                        self.settings:flush()
+                        self:showInfo(_("已退出登录"))
+                    end,
+                })
+            end,
+        },
+        {
             text = _("书源管理"),
             sub_item_table_func = function()
                 return self:getSourceMenuItems()

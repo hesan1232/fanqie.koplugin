@@ -205,13 +205,19 @@ function Client:request(opts)
         error("socket.http is not available")
     end
 
-    local _, code, resp_headers, status = transport_request(transport, {
+    local request_tbl = {
         url = opts.url,
         method = opts.method or (body and "POST" or "GET"),
         headers = headers,
         source = body and ltn12.source.string(body) or nil,
         sink = ltn12.sink.table(response),
-    }, opts.timeout)
+    }
+    -- 透传 redirect 选项（socket.http 默认 true 自动跟随，设 false 可手动处理重定向以保留中间 Set-Cookie）
+    if opts.redirect ~= nil then
+        request_tbl.redirect = opts.redirect
+    end
+
+    local _, code, resp_headers, status = transport_request(transport, request_tbl, opts.timeout)
 
     return table.concat(response), tonumber(code), resp_headers or {}, status
 end
@@ -1035,7 +1041,7 @@ function Client:fetch_shelf_detail(force_refresh)
     
     -- 书架直接使用官方 API
     local shelf_info = self:fetch_shelf_info()
-    if not shelf_info or not shelf_info.data then
+    if type(shelf_info) ~= "table" or type(shelf_info.data) ~= "table" then
         return { code = 0, data = { detail_list = {} } }
     end
     

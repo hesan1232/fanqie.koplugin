@@ -38,24 +38,48 @@ function Async.is_available()
         and type(ffiutil.isSubProcessDone) == "function"
 end
 
-local function json_encode(v)
-    if not ok_json or not json then return nil end
-    local ok, s = pcall(function()
-        if json.encode then return json.encode(v) end
-        return json:encode(v)
-    end)
-    if ok then return s end
-    return nil
+-- Lua 原生序列化：把子进程结果序列化为可 loadstring 的 Lua 表达式。
+-- 之前用 JSON，但 rapidjson/dkjson 对纯字符串 key 的 hash table 编码时会
+-- 丢成空 {}，导致 result.jar 跨子进程后变空（登录成功但 cookie 全丢）。
+-- Lua 序列化能完整保留 table 结构，且 string.format("%q") 正确转义所有特殊字符。
+local function lua_serialize(v)
+    local t = type(v)
+    if t == "string" then
+        return string.format("%q", v)
+    elseif t == "number" or t == "boolean" then
+        return tostring(v)
+    elseif t == "nil" then
+        return "nil"
+    elseif t == "table" then
+        local parts = {}
+        for k, val in pairs(v) do
+            local ks
+            if type(k) == "string" then
+                ks = string.format("[%q]", k)
+            elseif type(k) == "number" then
+                ks = "[" .. tostring(k) .. "]"
+            else
+                ks = nil  -- 跳过非 string/number key（function/userdata 等不支持）
+            end
+            if ks then
+                table.insert(parts, ks .. "=" .. lua_serialize(val))
+            end
+        end
+        return "{" .. table.concat(parts, ",") .. "}"
+    else
+        return "nil"
+    end
 end
 
-local function json_decode(s)
-    if not ok_json or not json then return nil end
-    local ok, v = pcall(function()
-        if json.decode then return json.decode(s) end
-        return json:decode(s)
-    end)
-    if ok then return v end
-    return nil
+local function lua_deserialize(s)
+    if not s or s == "" then return nil end
+    local load_func = loadstring or load
+    if not load_func then return nil end
+    local fn = load_func("return " .. s)
+    if not fn then return nil end
+    local ok, v = pcall(fn)
+    if not ok then return nil end
+    return v
 end
 
 -- 把任意错误信息清理成单行字符串，避免 JSON/协议被换行污染。
@@ -110,12 +134,15 @@ function Async.run(work_func, on_done, opts)
         local ok, result = pcall(work_func)
         local payload
         if ok then
-            local enc = json_encode({ ok = true, result = result })
-            -- JSON 编码失败时退化为纯成功标记
-            payload = enc or '{"ok":true,"result":null}'
+            local enc = lua_serialize({ ok = true, result = result })
+            -- 序列化失败时退化为纯成功标记
+            payload = enc or '{ok=true,result=nil}'
         else
-            local enc = json_encode({ ok = false, err = sanitize_err(result) })
-            payload = enc or '{"ok":false,"err":"encode failed"}'
+            local enc = lua_serialize({ ok = false, err = sanitize_err(result) })
+            payload = enc or '{ok=false,err="encode failed"}'
+        end
+        if ok_Log then
+            Log.debug("[async] child payload len=" .. tostring(#payload) .. " 前120=" .. payload:sub(1, 120))
         end
         -- writeToFD 第三参 true 表示写完关闭 fd，父进程 readAllFromFD 据此收到 EOF
         pcall(ffiutil.writeToFD, child_write_fd, payload, true)
@@ -168,7 +195,10 @@ function Async.run(work_func, on_done, opts)
             if stuff_to_read then
                 local ret_str = ffiutil.readAllFromFD(parent_read_fd)
                 handle.fd = nil
-                local decoded = ret_str and json_decode(ret_str)
+                if ok_Log then
+                    Log.debug("[async] parent ret_str len=" .. tostring(ret_str and #ret_str or -1) .. " 前120=" .. tostring(ret_str):sub(1, 120))
+                end
+                local decoded = ret_str and lua_deserialize(ret_str)
                 if type(decoded) == "table" then
                     if decoded.ok then
                         result_ok, result_val = true, decoded.result
@@ -176,7 +206,7 @@ function Async.run(work_func, on_done, opts)
                         result_ok, result_err = false, decoded.err or "unknown error"
                     end
                 else
-                    -- JSON 解析失败：若子进程已正常退出，视作成功无返回值
+                    -- Lua 反序列化失败：若子进程已正常退出，视作成功无返回值
                     if subprocess_done then
                         result_ok, result_val = true, nil
                     else
