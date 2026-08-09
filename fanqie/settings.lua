@@ -437,14 +437,34 @@ function Settings:apply_config(config, options)
         end
     end
     
-    local cookies = {}
-    if H.is_str(config.cookie_string) and config.cookie_string ~= "" then
-        cookies = parse_cookie_string(config.cookie_string)
-    elseif H.is_tbl(config.cookies) then
-        cookies = config.cookies
+    -- Cookie 优先级：扫码登录写入的 settings.cookies 优先，
+    -- config.cookie_string / config.cookies 仅作保底 fallback。
+    -- 已有扫码 cookie（任意非空值）时跳过，避免 config 覆盖扫码结果。
+    local existing_cookies = self:get("cookies", {}) or {}
+    local has_scanned_cookie = false
+    for _, v in pairs(existing_cookies) do
+        if v and v ~= "" then
+            has_scanned_cookie = true
+            break
+        end
     end
-    if next(cookies) ~= nil then
-        self:set("cookies", cookies)
+
+    if not has_scanned_cookie then
+        local cookies = {}
+        if H.is_str(config.cookie_string) and config.cookie_string ~= "" then
+            cookies = parse_cookie_string(config.cookie_string)
+        elseif H.is_tbl(config.cookies) then
+            cookies = config.cookies
+        end
+        -- 过滤空值：config 模板里 ttwid="" / sessionid="" 这类占位不算有效 cookie
+        for k, v in pairs(cookies) do
+            if not v or v == "" then
+                cookies[k] = nil
+            end
+        end
+        if next(cookies) ~= nil then
+            self:set("cookies", cookies)
+        end
     end
     
     if apply_preferences and H.is_tbl(config.sync) then

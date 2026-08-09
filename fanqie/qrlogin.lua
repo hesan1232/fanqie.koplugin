@@ -176,6 +176,7 @@ function QRLogin:new(client, settings, plugin)
     self.retry_dialog = nil
     self.started = 0      -- 开始时间（超时检测）
     self.poll_failures = 0
+    self.login_completed = false  -- 登录已完成标志，防止 dismiss_callback 误清空 jar
     return self
 end
 
@@ -202,6 +203,7 @@ end
 --- 取消登录：generation+1 使所有旧回调失效，关闭对话框，清空临时 jar
 function QRLogin:cancel()
     self.generation = self.generation + 1
+    self.login_completed = false
     self:_close_dialog()
     self:_close_retry_dialog()
     self.jar = {}
@@ -277,9 +279,12 @@ function QRLogin:_begin()
             height = size,
             scale_factor = 0.9,
             dismiss_callback = function()
-                Log.debug("[FanQieQR] dismiss_callback: gen=" .. tostring(gen) .. " generation=" .. tostring(self.generation) .. " dialog_match=" .. tostring(self.dialog == dialog))
+                Log.debug("[FanQieQR] dismiss_callback: gen=" .. tostring(gen) .. " generation=" .. tostring(self.generation) .. " dialog_match=" .. tostring(self.dialog == dialog) .. " login_completed=" .. tostring(self.login_completed))
                 if self.dialog == dialog then self.dialog = nil end
-                if gen == self.generation then
+                -- 登录已完成时不再触发 cancel（_finish_login_success 关对话框会同步触发此回调，
+                -- 仅靠 generation 判断不可靠——UIManager:close 的 dismiss_callback 时机早于
+                -- generation+1 生效，会导致 jar 被清空）
+                if gen == self.generation and not self.login_completed then
                     self:cancel()
                     self:toast(_("已取消登录"))
                 end
@@ -489,23 +494,27 @@ end
 function QRLogin:_finish_login_success(gen)
     Log.debug("[FanQieQR] _finish_login_success: gen=" .. tostring(gen) .. " generation=" .. tostring(self.generation) .. " dialog=" .. tostring(self.dialog ~= nil))
     if gen ~= self.generation then return end
-    -- 必须先 generation+1 再 _close_dialog：_close_dialog 的 UIManager:close 会同步触发
-    -- dismiss_callback，若此时 generation 还没+1，gen==self.generation 成立会执行 cancel()
-    -- 清空 self.jar，导致 cookie 丢失（之前"登录成功但 0 个 cookie + 弹出已取消登录"的根因）。
+    -- 先把 jar 复制到局部变量：_close_dialog 触发的 dismiss_callback 可能执行 cancel()
+    -- 清空 self.jar，用局部副本保证 cookie 不丢失。
+    local jar = {}
+    for k, v in pairs(self.jar) do jar[k] = v end
+    -- 标记登录已完成，dismiss_callback 据此跳过 cancel()
+    self.login_completed = true
     self.generation = self.generation + 1
     self:_close_dialog()
-    -- 统计 jar 中所有 cookie key，方便排查缺了哪些
+    -- 用局部 jar 统计和持久化（self.jar 可能已被 dismiss_callback→cancel() 清空）
     local keys = {}
     local count = 0
-    for k, v in pairs(self.jar) do
+    for k, v in pairs(jar) do
         table.insert(keys, k)
         count = count + 1
     end
     table.sort(keys)
     Log.info("[FanQieQR] 登录成功，扫码获取到 " .. count .. " 个 cookie: " .. table.concat(keys, ", "))
-    Log.info("[FanQieQR] cookie header: " .. Cookie.to_header(self.jar))
-    self.settings:set("cookies", self.jar)
+    Log.info("[FanQieQR] cookie header: " .. Cookie.to_header(jar))
+    self.settings:set("cookies", jar)
     self.settings:flush()
+    self.jar = jar  -- 恢复 self.jar（dismiss_callback 可能已清空）
     self:toast(_("登录成功"))
 end
 
