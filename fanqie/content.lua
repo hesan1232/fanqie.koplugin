@@ -197,6 +197,13 @@ function Content.save_cache_index(settings, book_id, cached_chapters)
     end
     table.insert(parts, "}")
     H.write_file(index_path, table.concat(parts, "\n"))
+
+    -- 同步更新内存缓存：load_cache_index 优先读内存，若不更新会导致
+    -- 预下载/手动下载新增的章节在目录中不显示对号（内存缓存陈旧）
+    local ok_state, _state = pcall(require, "fanqie.state")
+    if ok_state and _state and _state.setChapterIndexCache then
+        _state.setChapterIndexCache(book_id, cached_chapters)
+    end
 end
 
 function Content.load_cache_index(settings, book_id)
@@ -260,7 +267,21 @@ function Content.save_catalog_cache(settings, book_id, chapters)
     H.write_file(path, table.concat(parts, "\n"))
 end
 
+-- 目录缓存读取：内存主源 + 文件后备 + 回填
+-- 优先查内存缓存（_state.cached_directory），命中直接返回，避免文件 IO；
+-- 未命中时读文件缓存，并回填内存，后续读取全部走内存。
+-- 此函数在父进程调用，回填内存安全有效。
 function Content.load_catalog_cache(settings, book_id)
+    -- 1. 先查内存缓存
+    local ok_state, _state = pcall(require, "fanqie.state")
+    if ok_state and _state and _state.getDirectoryCache then
+        local mem = _state.getDirectoryCache(book_id)
+        if mem and #mem > 0 then
+            return mem
+        end
+    end
+
+    -- 2. 未命中：读文件缓存
     local dir = Content.book_cache_dir(settings, book_id)
     local path = H.join_path(dir, "catalog_cache.lua")
     if not H.file_exists(path) then
@@ -270,10 +291,20 @@ function Content.load_catalog_cache(settings, book_id)
     if not ok or not H.is_tbl(catalog) then
         return nil
     end
+
+    -- 3. 回填内存缓存，后续读取走内存
+    if ok_state and _state and _state.setDirectoryCache and catalog and #catalog > 0 then
+        _state.setDirectoryCache(book_id, catalog)
+    end
     return catalog
 end
 
 function Content.clear_catalog_cache(settings, book_id)
+    -- 同步清理内存缓存，避免删文件后内存仍返回陈旧数据
+    local ok_state, _state = pcall(require, "fanqie.state")
+    if ok_state and _state and _state.invalidateDirectoryCache then
+        _state.invalidateDirectoryCache(book_id)
+    end
     local dir = Content.book_cache_dir(settings, book_id)
     local path = H.join_path(dir, "catalog_cache.lua")
     if H.file_exists(path) then

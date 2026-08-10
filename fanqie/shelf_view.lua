@@ -50,26 +50,6 @@ function ShelfItem:init()
     }
 
     local h = self.dimen.h
-    if self.entry and self.entry._miu_action_row then
-        local action_face = Font:getFace("cfont", math.min(20, Screen:scaleBySize(17)))
-        local row = HorizontalGroup:new{
-            align = "center",
-            CenterContainer:new{
-                dimen = Geom:new{w=self.dimen.w, h=h},
-                TextWidget:new{text = _("⟳ 刷新书架"), face = action_face, bold = true},
-            },
-        }
-        self._underline = UnderlineContainer:new{
-            dimen = self.dimen:copy(),
-            linesize = Size.line.thin,
-            color = Blitbuffer.COLOR_DARK_GRAY,
-            padding = 0,
-            vertical_align = "center",
-            row,
-        }
-        self[1] = self._underline
-        return
-    end
     local side = math.max(Size.padding.small, Screen:scaleBySize(4))
     local show_cover = self.entry.show_cover ~= false
     local cover_h = math.max(Screen:scaleBySize(58), h - side * 2)
@@ -189,11 +169,34 @@ local ShelfMenu = Menu:extend{
     _suppress_page_callback = false,
 }
 
+-- 左上角按钮：弹出操作菜单（与目录界面一致，图标为 appbar.menu 三横杠）
+function ShelfMenu:onLeftButtonTap()
+    if not self._on_refresh then return end
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local action_dialog
+    action_dialog = ButtonDialog:new{
+        title = _("书架操作"),
+        title_align = "center",
+        buttons = {
+            {{
+                text = _("刷新书架"),
+                callback = function()
+                    UIManager:close(action_dialog)
+                    self._on_refresh()
+                end,
+            }},
+            {{
+                text = _("关闭"),
+                callback = function()
+                    UIManager:close(action_dialog)
+                end,
+            }},
+        },
+    }
+    UIManager:show(action_dialog)
+end
+
 function ShelfMenu:onMenuSelect(entry, pos)
-    if entry and entry._miu_action_row then
-        if entry.refresh_callback then entry.refresh_callback() end
-        return true
-    end
     return Menu.onMenuSelect(self, entry)
 end
 
@@ -249,18 +252,10 @@ end
 
 local ShelfView = {}
 
-function ShelfView.show(opts)
-    opts = opts or {}
+-- 构造 ShelfItem 的 items 列表（show 和 update 复用）
+local function build_items(books, opts)
     local items = {}
-    local action_count = 0
-    if opts.show_actions ~= false and opts.on_refresh then
-        action_count = 1
-        items[#items + 1] = {
-            _miu_action_row = true,
-            refresh_callback = opts.on_refresh,
-        }
-    end
-    for _, book in ipairs(opts.books or {}) do
+    for _, book in ipairs(books or {}) do
         items[#items + 1] = {
             book_id = book.book_id or book.bookId,
             title = book.title,
@@ -272,27 +267,47 @@ function ShelfView.show(opts)
             hold_callback = function() if opts.on_hold then opts.on_hold(book) end end,
         }
     end
+    return items
+end
+
+function ShelfView.show(opts)
+    opts = opts or {}
+    local items = build_items(opts.books or {}, opts)
     local page_callback
     if opts.on_page_changed then
         page_callback = function(page, first, last, current)
-            local book_first = math.max(1, (tonumber(first) or 1) - action_count)
-            local book_last = math.min(#(opts.books or {}), (tonumber(last) or 0) - action_count)
-            if book_last >= book_first then
-                opts.on_page_changed(page, book_first, book_last, current)
+            if last >= first then
+                opts.on_page_changed(page, first, last, current)
             end
         end
     end
     local menu = ShelfMenu:new{
         title = opts.title or _("书架"),
         item_table = items,
-        items_per_page = action_count > 0 and 8 or 7,
+        items_per_page = 7,
         is_borderless = true,
         title_bar_fm_style = true,
+        title_bar_left_icon = "appbar.menu",
         on_close_callback = opts.on_close,
         on_page_changed = page_callback,
     }
+    menu._on_refresh = opts.on_refresh
     UIManager:show(menu)
     return menu
+end
+
+-- 动态更新书架菜单内容（不关闭重开，避免闪烁）
+-- 刷新数据回来后直接 switchItemTable 更新，保持当前页
+function ShelfView.update(menu, books, opts)
+    if not menu then return end
+    opts = opts or {}
+    local items = build_items(books or {}, opts)
+    -- 保持当前页：switchItemTable 第二参数是 item_number（全局索引），不是 page
+    local current_page = menu.page or 1
+    local perpage = menu.perpage or 7
+    local item_number = (current_page - 1) * perpage + 1
+    if item_number > #items then item_number = 1 end
+    menu:switchItemTable(items, item_number, true)
 end
 
 return ShelfView

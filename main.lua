@@ -73,6 +73,9 @@ local Patches = safe_require("patches.core")
 local Bookshelf = safe_require("fanqie.bookshelf")
 local ReaderNavigation = safe_require("fanqie.reader_navigation")
 
+-- 插件元信息（版本号、关于文案）：集中管理，避免多处维护不同步
+local Info = safe_require("fanqie.info")
+
 -- 异步子进程模块：把进度上传 / 预下载等阻塞网络操作移出 UI 线程，消除卡顿。
 local Async = safe_require("fanqie.async")
 
@@ -136,6 +139,9 @@ if not ok_state then
     function _state.setCurrentParaIndex(i) _state.current_para_index = i or 0 end
     function _state.getCurrentParaIndex() return _state.current_para_index or 0 end
     function _state.clearParaReviews() _state.current_para_reviews = {}; _state.current_para_index = 0 end
+    _state.chapter_navigating = false
+    function _state.setChapterNavigating(v) _state.chapter_navigating = v == true end
+    function _state.isChapterNavigating() return _state.chapter_navigating == true end
 end
 
 local function getCurrentChapterIndex()
@@ -156,7 +162,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = "2.1.1",
+    version = Info and Info.version or "2.2.0",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -313,13 +319,6 @@ function FanQiePlugin:addToMainMenu(menu_items)
                         end),
                     },
                     {
-                        text = _("段评"),
-                        separator = true,
-                        sub_item_table_func = function()
-                            return self:getReviewMenuItems()
-                        end,
-                    },
-                    {
                         text = _("设置"),
                         sub_item_table_func = function()
                             return self:getSettingsMenuItems()
@@ -340,7 +339,7 @@ function FanQiePlugin:addToMainMenu(menu_items)
                     {
                         text = _("关于"),
                         callback = self:safeCallback(_("关于"), function()
-                            self:showInfo(T(_("番茄小说插件 v%1\n\n为 KOReader 打造的墨水屏阅读体验，适配黑白电子墨水屏。\n\n核心特性:\n• 扫码登录: 番茄网页扫码，自动获取书架/进度/目录\n• 多书源聚合: 晴天 / 大灰狼 / 番茄官方，自动故障切换\n• 段评功能: 章节段落评论，墨水屏黑白适配\n• 异步引擎: 目录获取/章节下载/进度上传/登录检测均在子进程执行，UI 零卡顿\n• 限流保护: 滑动时间窗口算法，防止书源服务器封禁\n• 智能缓存: 章节正文 + 目录持久化，离线可读\n• 预下载: 阅读时后台自动下载后续章节\n• 进度同步: 进入阅读自动拉取云端进度，阅读中定期上传\n• 书源管理: 启用/禁用、排序、限流配置、线路检测\n\n下载格式: HTML\n缓存目录: %2"), self.version, self.settings:get_download_dir()))
+                            self:showInfo(T(Info and Info.about_template or _("番茄小说插件 v%1"), self.version, self.settings:get_download_dir()))
                         end),
                     },
                 }
@@ -358,57 +357,10 @@ function FanQiePlugin:addToMainMenu(menu_items)
 end
 
 -- ===========================================================================
--- 段评菜单
+-- 段评
 -- ===========================================================================
-
-function FanQiePlugin:getReviewMenuItems()
-    local items = {}
-
-    -- 段评开关
-    table.insert(items, {
-        text_func = function()
-            if _state.isReviewEnabled() then
-                return _("段评: 开 (点击关闭)")
-            else
-                return _("段评: 关 (点击开启)")
-            end
-        end,
-        keep_menu_open = true,
-        callback = function(touchmenu_instance)
-            local new_state = not _state.isReviewEnabled()
-            _state.setReviewEnabled(new_state)
-
-            if new_state then
-                -- 开启段评：重新获取当前章节（带 review=1）
-                self:showInfo(_("段评已开启，正在重新获取章节..."))
-                self:reloadCurrentChapter()
-            else
-                -- 关闭段评：清除段评数据
-                _state.clearParaReviews()
-                self:showInfo(_("段评已关闭"))
-            end
-
-            if touchmenu_instance then
-                touchmenu_instance:updateItems()
-            end
-        end,
-    })
-
-    -- 刷新段评
-    table.insert(items, {
-        text = _("刷新段评数据"),
-        keep_menu_open = true,
-        callback = function(touchmenu_instance)
-            self:showInfo(_("正在刷新段评数据..."))
-            self:reloadCurrentChapter()
-            if touchmenu_instance then
-                touchmenu_instance:updateItems()
-            end
-        end,
-    })
-
-    return items
-end
+-- 段评开关已移至「设置」页面（getSettingsMenuItems 中的"段评显示"），
+-- 阅读时点击「重新获取本章节」会根据开关状态决定是否带段评获取正文。
 
 -- 显示段评列表对话框
 function FanQiePlugin:showParaReviewList()
@@ -515,6 +467,12 @@ end
 -- 显示段评详情弹窗（纯 UI 渲染，不做网络请求）
 function FanQiePlugin:_displayParaReviewDetail(index, total_reviews, ok, result, err)
     local self = self
+    -- 章节切换中：异步段评获取完成时可能已进入新章节，丢弃过期的段评弹窗
+    if _state.isChapterNavigating() then
+        if Log then Log.debug("[段评] _displayParaReviewDetail: 章节切换中，丢弃段评弹窗") end
+        self:closeBusy()
+        return
+    end
     if not ok then
         if Log then Log.error("[段评] 获取失败:", tostring(err or result)) end
         self:closeBusy()
@@ -528,33 +486,72 @@ function FanQiePlugin:_displayParaReviewDetail(index, total_reviews, ok, result,
         local comments_count = 0
         local total_val = 0
         if result_type == "table" then
-            local c = result.comments
-            if not c and type(result.data) == "table" then
-                c = result.data.comments or result.data
+            -- 新格式: result.data.data_list[]
+            local dl = result.data and result.data.data_list
+            if type(dl) == "table" then
+                comments_count = #dl
+                total_val = (result.data.common_list_info and result.data.common_list_info.total) or 0
+            else
+                -- 旧格式兼容: result.data.comments[]
+                local c = result.comments
+                if not c and type(result.data) == "table" then
+                    c = result.data.comments or result.data
+                end
+                if type(c) == "table" then comments_count = #c end
+                total_val = result.total
+                    or (result.data and result.data.total) or 0
             end
-            if type(c) == "table" then comments_count = #c end
-            total_val = result.total
-                or (result.data and result.data.total) or 0
         end
         Log.info("[段评] API返回: type=" .. result_type
             .. " comments=" .. comments_count
             .. " total=" .. tostring(total_val))
     end
 
-    -- 解析并显示评论
+    -- 解析评论列表（支持新格式 data_list 和旧格式 comments）
     local comments = nil
-    if type(result) == "table" then
-        comments = result.comments
-        if not comments and type(result.data) == "table" then
-            comments = result.data.comments or result.data
-        end
-    end
-    if type(comments) ~= "table" then comments = {} end
-
     local total = 0
-    if type(result) == "table" then
-        total = result.total or (result.data and result.data.total) or #comments or 0
+
+    if type(result) == "table" and type(result.data) == "table" then
+        -- 新格式: /api/fanqie/comment/paragraph/list
+        -- data.data_list[].comment.{common,stat}
+        -- data.common_list_info.{total,has_more,cursor}
+        local data_list = result.data.data_list
+        if type(data_list) == "table" and #data_list > 0 then
+            comments = {}
+            total = (result.data.common_list_info and result.data.common_list_info.total) or #data_list
+            for _, item in ipairs(data_list) do
+                local c = item.comment or item
+                local common = c.common or {}
+                local content = common.content or {}
+                local user_info = common.user_info or {}
+                local base_info = user_info.base_info or user_info
+                local stat = c.stat or {}
+
+                table.insert(comments, {
+                    username = base_info.user_name or common.user_name or "匿名",
+                    text = content.text or common.text or "",
+                    like_count = stat.digg_count or 0,
+                    reply_count = stat.reply_count or 0,
+                    create_time = common.create_timestamp or common.create_time,
+                    para_src = (c.expand and c.expand.para_src_content) or "",
+                })
+            end
+        else
+            -- 旧格式兼容: data.comments[]
+            local c = result.data.comments
+            if type(c) == "table" then
+                comments = c
+                total = result.data.total or #c
+            end
+        end
+    elseif type(result) == "table" then
+        -- 旧格式兼容: result.comments[]
+        comments = result.comments
+        total = result.total or 0
     end
+
+    if type(comments) ~= "table" then comments = {} end
+    if total == 0 then total = #comments end
 
     self:closeBusy()
 
@@ -565,12 +562,13 @@ function FanQiePlugin:_displayParaReviewDetail(index, total_reviews, ok, result,
                 or (comment.user and comment.user.user_name)
                 or (comment.user and comment.user.nick_name)
                 or comment.nick_name or comment.nickname or "匿名")
-            local content_text = tostring(comment.content or comment.text or "")
-            local like_count = tonumber(comment.like_count or comment.likeCount) or 0
+            local content_text = tostring(comment.text or comment.content or "")
+            local like_count = tonumber(comment.like_count or comment.likeCount or comment.digg_count) or 0
             local reply_count = tonumber(comment.reply_count or comment.replyCount) or 0
-            local raw_time = comment.create_time or comment.create_at or comment.time
+            local raw_time = comment.create_time or comment.create_at or comment.time or comment.create_timestamp
             local time_str = ""
             if type(raw_time) == "number" then
+                -- create_timestamp 是秒级时间戳
                 time_str = os.date("%Y-%m-%d %H:%M", raw_time)
             elseif raw_time then
                 time_str = tostring(raw_time)
@@ -619,7 +617,7 @@ function FanQiePlugin:_displayParaReviewDetail(index, total_reviews, ok, result,
 
         self._para_viewer = TextViewer:new{
             title = T(_("段评 %1/%2 (共%3条)"), tostring(index),
-                tostring(total_reviews), tostring(#comments)),
+                tostring(total_reviews), tostring(total)),
             text = review_text,
             text_type = "book_info",
             justified = false,
@@ -646,6 +644,11 @@ end
 function FanQiePlugin:onFanQieParaReview(idx)
     if not self:isCurrentDocFanqie() then return end
     if not idx then return end
+    -- 章节切换中（onEndOfBook→navigateToChapter）：忽略段评请求，防止弹窗闪现
+    if _state.isChapterNavigating() then
+        if Log then Log.debug("[段评] onFanQieParaReview: 章节切换中，跳过 idx=" .. tostring(idx)) end
+        return true
+    end
     if Log then Log.info("[段评] onFanQieParaReview: idx=" .. tostring(idx)) end
     self:showParaReviewDetail(idx)
     return true
@@ -694,7 +697,7 @@ function FanQiePlugin:getMainMenuItems()
         text = _("关于"),
         callback = self:safeCallback(_("关于"), function()
             UIManager:show(InfoMessage:new{
-                text = T(_("番茄小说插件 v%1\n\n为 KOReader 打造的墨水屏阅读体验，适配黑白电子墨水屏。\n\n核心特性:\n• 扫码登录: 番茄网页扫码，自动获取书架/进度/目录\n• 多书源聚合: 晴天 / 大灰狼 / 番茄官方，自动故障切换\n• 段评功能: 章节段落评论，墨水屏黑白适配\n• 异步引擎: 目录获取/章节下载/进度上传/登录检测均在子进程执行，UI 零卡顿\n• 限流保护: 滑动时间窗口算法，防止书源服务器封禁\n• 智能缓存: 章节正文 + 目录持久化，离线可读\n• 预下载: 阅读时后台自动下载后续章节\n• 进度同步: 进入阅读自动拉取云端进度，阅读中定期上传\n• 书源管理: 启用/禁用、排序、限流配置、线路检测\n\n下载格式: HTML\n缓存目录: %2"), self.version, self.settings:get_download_dir()),
+                text = T(Info and Info.about_template or _("番茄小说插件 v%1"), self.version, self.settings:get_download_dir()),
             })
         end),
     })
@@ -746,6 +749,16 @@ function FanQiePlugin:getSettingsMenuItems()
                 cache.download_book_images = not (cache.download_book_images ~= false)
                 self.settings:set("cache", cache)
                 self.settings:flush()
+            end,
+        },
+        {
+            text = _("段评显示"),
+            checked_func = function()
+                return _state.isReviewEnabled()
+            end,
+            keep_menu_open = true,
+            callback = function()
+                _state.setReviewEnabled(not _state.isReviewEnabled())
             end,
         },
         {
@@ -1661,6 +1674,7 @@ function FanQiePlugin:showBookList(books)
         books = books,
         show_covers = true,
         on_select = function(book)
+            self:_cancelCoverLoading()  -- 进入书籍时停止封面预下载，释放带宽给章节预下载
             self:showBookDetail(book)
         end,
         on_close = function()
@@ -1669,22 +1683,26 @@ function FanQiePlugin:showBookList(books)
             _state.active_menu = nil
         end,
         on_refresh = function()
-            self.client:clear_shelf_cache()
-            self:showBookshelf()
+            self:showBookshelf({ force_refresh = true })
         end,
         on_page_changed = function(page, first, last, current)
             self:_onShelfPage(books, current, page, first, last)
         end,
     }
     _state.active_menu = self.book_list_menu
+
+    -- 后台批量预下载所有未缓存的封面（串行，避免阻塞 UI）
+    self:_preloadAllCovers(books)
 end
 
 function FanQiePlugin:_cancelCoverLoading()
     self._cover_generation = (tonumber(self._cover_generation) or 0) + 1
+    self._cover_preload_generation = (tonumber(self._cover_preload_generation) or 0) + 1
 end
 
 function FanQiePlugin:_onShelfPage(books, view, page, first, last)
-    self:_cancelCoverLoading()
+    -- 只取消翻页级的封面下载，不影响 _preloadAllCovers 的全量预下载
+    self._cover_generation = (tonumber(self._cover_generation) or 0) + 1
     local generation = self._cover_generation
     self:_cacheShelfPageCovers(books, view, page, first, last, generation, first)
 end
@@ -1769,43 +1787,90 @@ function FanQiePlugin:_cacheShelfPageCovers(books, view, page, first, last, gene
     end)
 end
 
-function FanQiePlugin:showSortMenu()
-    local sort_types = {
-        { text = _("默认顺序"), value = "default" },
-        { text = _("阅读进度"), value = "progress" },
-        { text = _("最后阅读时间"), value = "read" },
-        { text = _("加入时间"), value = "added" },
-        { text = _("书名排序"), value = "title" },
-    }
+-- 后台批量预下载所有未缓存的封面（子进程执行，不阻塞 UI）
+-- 使用独立的 _cover_preload_generation，不受翻页取消影响
+function FanQiePlugin:_preloadAllCovers(books)
+    self._cover_preload_generation = (tonumber(self._cover_preload_generation) or 0) + 1
+    local generation = self._cover_preload_generation
+    local cover_cache_dir = self.settings:get_download_dir() .. "/covers"
+    if H then H.make_dir(cover_cache_dir) end
+    local view = self.book_list_menu
+    local client = self.client
 
-    local current_sort = _state.shelf_sort_type or "default"
-
-    local Menu = require("ui/widget/menu")
-    local sort_menu = Menu:new{
-        title = _("排序方式"),
-        item_table = sort_types,
-        is_borderless = true,
-        on_close = function()
-            sort_menu = nil
-        end,
-    }
-
-    for i, item in ipairs(sort_menu.item_table) do
-        if item.value == current_sort then
-            sort_menu:selectItem(i)
-            break
+    -- 更新 UI 中指定 book_id 的封面路径
+    local function update_ui_cover(book_id, cover_path)
+        if not view or view._miu_closed then return end
+        local changed = false
+        for _, entry in ipairs(view.item_table or {}) do
+            if tostring(entry.book_id) == tostring(book_id) then
+                if entry.cover_path ~= cover_path then
+                    entry.cover_path = cover_path
+                    changed = true
+                end
+                break
+            end
+        end
+        if changed then
+            view._suppress_page_callback = true
+            pcall(view.updateItems, view, nil, true)
+            view._suppress_page_callback = false
         end
     end
 
-    UIManager:show(sort_menu)
+    local function preload_one(idx)
+        if generation ~= self._cover_preload_generation then return end
+        if not view or view._miu_closed then return end
+        if idx > #books then return end
 
-    local plugin = self
-    sort_menu.onMenuSelect = function(_, item)
-        _state.shelf_sort_type = item.value
-        UIManager:close(sort_menu)
-        plugin.client:clear_shelf_cache()
-        plugin:showBookshelf()
+        local book = books[idx]
+        if not book or not book.cover or book.cover == "" then
+            UIManager:scheduleIn(0.05, function() preload_one(idx + 1) end)
+            return
+        end
+
+        -- 已有缓存路径，跳过
+        if book.cover_path then
+            UIManager:scheduleIn(0.05, function() preload_one(idx + 1) end)
+            return
+        end
+
+        local cover_filename = string.gsub(book.title, "[/\\:%*%?\"<>|]", "_") .. ".jpg"
+        local cover_path = cover_cache_dir .. "/" .. cover_filename
+        local book_id = book.book_id or book.bookId
+
+        -- 文件已存在，设置路径并更新 UI
+        if H.file_exists(cover_path) then
+            book.cover_path = cover_path
+            update_ui_cover(book_id, cover_path)
+            UIManager:scheduleIn(0.05, function() preload_one(idx + 1) end)
+            return
+        end
+
+        -- 子进程下载封面并写入文件，UI 线程零阻塞
+        local url = book.cover
+        Async.run(function()
+            -- fork 继承 client/settings，子进程内同步下载并写文件
+            local data = client:get_binary(url)
+            local file = io.open(cover_path, "wb")
+            if file then
+                file:write(data)
+                file:close()
+                return { path = cover_path, book_id = tostring(book_id) }
+            end
+            return nil
+        end, function(ok, result, err)
+            if generation ~= self._cover_preload_generation then return end
+            if ok and result and result.path then
+                book.cover_path = result.path
+                update_ui_cover(result.book_id, result.path)
+            end
+            -- 继续下一本（子进程已退出，无残留资源）
+            UIManager:scheduleIn(0.05, function() preload_one(idx + 1) end)
+        end, { poll_interval = 0.125, timeout = 30 })
     end
+
+    -- 延迟启动，给书架 UI 渲染让出时间
+    UIManager:scheduleIn(0.5, function() preload_one(1) end)
 end
 
 function FanQiePlugin:showBookDetail(book)
@@ -1854,7 +1919,7 @@ function FanQiePlugin:showBookDetail(book)
                 text = _("清空本书缓存"),
                 callback = function()
                     UIManager:show(ConfirmBox:new{
-                        text = T(_("确定清空《%s》的缓存?\n%d 章节将被删除。"), book.title or "未知", cache_count),
+                        text = T(_("确定清空《%1》的缓存?\n%2 章节将被删除。"), book.title or "未知", cache_count),
                         ok_text = _("清空"),
                         cancel_text = _("取消"),
                         ok_callback = function()
@@ -1973,10 +2038,16 @@ function FanQiePlugin:showChapterListing(book, opts)
         _state.current_book = book
         _state.current_chapters = chapters
 
+        -- 刷新内存缓存：预下载可能已更新文件但内存缓存未同步，
+        -- 强制重新从文件加载确保目录对号准确
+        _state.invalidateChapterIndexCache(book.book_id)
         local cached = Content.load_cache_index(self.settings, book.book_id)
         local current_idx = getCurrentChapterIndex()
 
-        if book.item_id then
+        -- current_chapter_index 已在切章时正确更新，优先使用。
+        -- 仅当 current_chapter_index 无效（首次打开/未设置）时，
+        -- 才用 book.item_id（书架记录的上次阅读章节）回退定位。
+        if (not current_idx or current_idx <= 0) and book.item_id then
             for i, chapter in ipairs(chapters) do
                 if tostring(chapter.itemId) == tostring(book.item_id) then
                     current_idx = i
@@ -2004,6 +2075,11 @@ function FanQiePlugin:showChapterListing(book, opts)
             table.insert(items, {
                 text = prefix .. title,
                 callback = function()
+                    -- 先关闭目录菜单，避免切章时菜单闪现
+                    if _state.active_menu then
+                        UIManager:close(_state.active_menu)
+                        _state.active_menu = nil
+                    end
                     self:openChapter(book, chapters, i)
                 end,
             })
@@ -2097,7 +2173,18 @@ function FanQiePlugin:showChapterListing(book, opts)
     end
 
     -- 无缓存或强制刷新：子进程获取目录，UI 线程保持响应（不再卡顿）
-    if not self:checkNetwork() then return end
+    if not self:checkNetwork() then
+        -- force_refresh 无网时回退到旧缓存
+        if force_refresh then
+            local cached = Content.load_catalog_cache(self.settings, book.book_id)
+            if cached and #cached > 0 then
+                display_chapters(cached)
+                self:showInfo(_("无网络，显示缓存目录"))
+                return
+            end
+        end
+        return
+    end
     self:showBusy(_("正在获取目录..."))
     local client = self.client
     local settings = self.settings
@@ -2109,23 +2196,37 @@ function FanQiePlugin:showChapterListing(book, opts)
     end, function(ok, result, err)
         self:closeBusy()
         if not ok or type(result) ~= "table" then
+            -- 获取失败：回退到旧缓存，不删除任何数据
+            if force_refresh then
+                local cached = Content.load_catalog_cache(settings, book.book_id)
+                if cached and #cached > 0 then
+                    display_chapters(cached)
+                    self:showInfo(_("刷新失败，显示缓存目录"))
+                    return
+                end
+            end
             self:showError(T(_("获取目录失败:\n%1"), display_error(err or result)))
             return
         end
         local fetched = result
         if #fetched == 0 then
+            -- 空结果可能是 cookie 过期，回退到旧缓存
+            if force_refresh then
+                local cached = Content.load_catalog_cache(settings, book.book_id)
+                if cached and #cached > 0 then
+                    display_chapters(cached)
+                    self:showInfo(_("获取数据为空，显示缓存目录"))
+                    return
+                end
+            end
             self:showInfo(_("未获取到章节"))
             return
         end
 
-        -- 持久化到磁盘，下次不再请求
+        -- 获取成功：覆盖旧缓存
         Content.save_catalog_cache(settings, book_id, fetched)
         -- 同时更新内存缓存
-        _state.cached_directory = _state.cached_directory or {}
-        _state.cached_directory[book_id] = {
-            chapters = fetched,
-            timestamp = os.time(),
-        }
+        _state.setDirectoryCache(book_id, fetched)
 
         display_chapters(fetched)
     end, { poll_interval = 0.3, timeout = 60 })
@@ -2189,8 +2290,12 @@ function FanQiePlugin:navigateToChapter(book, chapters, chapter_index, opts)
         return false
     end
 
+    -- 标记章节切换中：防止段评异步回调在切章后弹窗闪现
+    _state.setChapterNavigating(true)
+
     if _state.is_downloading then
         -- 正在下载其它章节：给用户明确提示，而不是静默失败
+        _state.setChapterNavigating(false)
         self:showInfo(_("正在下载中，请稍候再试"))
         return false
     end
@@ -2208,13 +2313,8 @@ function FanQiePlugin:navigateToChapter(book, chapters, chapter_index, opts)
     local cached_chapters = getCachedChapters(self, book)
     local existing_path = cached_chapters[item_id]
 
-    -- 段评开启时，如果缓存的章节没有段评数据，需要重新获取
-    if existing_path and review_enabled then
-        local existing_reviews = Content.load_para_reviews_index(self.settings, book.book_id, item_id)
-        if #existing_reviews == 0 then
-            existing_path = nil  -- 没有段评数据，需要重新获取
-        end
-    end
+    -- 已缓存正文直接使用：段评数据缺失不触发重下（有些章节本就无段评）。
+    -- 想要段评的用户可通过「重新获取本章节」手动重下（按当前段评开关决定是否带段评）。
 
     -- If not found in cache index, try to find file directly from filesystem
     if not existing_path or not H.file_exists(existing_path) then
@@ -2244,7 +2344,7 @@ function FanQiePlugin:navigateToChapter(book, chapters, chapter_index, opts)
     end
 
     _state.is_downloading = true
-    self:showBusy(T(_("正在下载: %s"), chapter.title or ""))
+    self:showBusy(T(_("正在下载: %1"), chapter.title or ""))
 
     local b = { book_id = book.book_id, title = book.title, author = book.author }
     local client = self.client
@@ -2259,6 +2359,7 @@ function FanQiePlugin:navigateToChapter(book, chapters, chapter_index, opts)
         if not ok or type(result) ~= "table" or not result.path then
             Log.error("navigateToChapter download failed:", tostring(err or result))
             _state.is_downloading = false
+            _state.setChapterNavigating(false)
             self:showError(T(_(opts.error_message or "下载章节失败:\n%1"), display_error(err or result)))
             return
         end
@@ -2301,6 +2402,9 @@ end
 
 function FanQiePlugin:showReaderUI(path, chapter)
     local ReaderUI = require("apps/reader/readerui")
+
+    -- 章节切换已完成（新文档即将加载），清除导航标志
+    _state.setChapterNavigating(false)
 
     local ok, err = pcall(function()
         -- 不用 switchDocument（其内部先 onClose 再 showReader，中间 forceRePaint 会闪现书架）
@@ -2414,13 +2518,7 @@ function FanQiePlugin:preDownloadChapters(book, chapters, current_index)
         local item_id = tostring(chapter.itemId)
 
         local already_cached = cached_chapters[item_id] and H.file_exists(cached_chapters[item_id])
-        -- 段评开启时，还需检查是否有段评数据
-        if already_cached and review_enabled then
-            local existing_reviews = Content.load_para_reviews_index(settings, book.book_id, item_id)
-            if #existing_reviews == 0 then
-                already_cached = false  -- 没有段评数据，需要重新获取
-            end
-        end
+        -- 已缓存正文直接跳过：段评数据缺失不触发重下
 
         if already_cached then
             Log.debug("pre-download: chapter", target_idx, "already cached")
@@ -2617,6 +2715,7 @@ function FanQiePlugin:onFanQiePrevChapter()
     end
 
     _state.start_of_chapter_triggered = true
+    _state.setChapterNavigating(true)
 
     local prev_idx = current_idx - 1
     local chapters = _state.current_chapters
@@ -2632,17 +2731,10 @@ function FanQiePlugin:onFanQiePrevChapter()
     local existing_path = cached_chapters[item_id]
     local path = existing_path
 
-    -- 段评模式：检查缓存是否需要重新获取（无段评数据时）
+    -- 段评模式：段评开关决定首次下载是否带段评；已缓存正文直接用，缺段评不重下
     local review_enabled = _state.isReviewEnabled()
     local fetch_opts = { skip_cache_index = true }
     if review_enabled then fetch_opts.review = true end
-    if existing_path and review_enabled then
-        local existing_reviews = Content.load_para_reviews_index(self.settings, book.book_id, item_id)
-        if #existing_reviews == 0 then
-            existing_path = nil
-            path = nil
-        end
-    end
 
     -- 下载完成后的跳章逻辑（缓存命中与异步下载共用）
     local function finish_prev(p)
@@ -2671,7 +2763,7 @@ function FanQiePlugin:onFanQiePrevChapter()
             Content.save_cache_index(self.settings, book.book_id, cached_chapters)
             path = found_path
         else
-            self:showBusy(T(_("正在下载: %s"), prev_chapter.title or ""))
+            self:showBusy(T(_("正在下载: %1"), prev_chapter.title or ""))
             local b = { book_id = book.book_id, title = book.title, author = book.author }
             local client = self.client
             local settings = self.settings
@@ -2683,6 +2775,7 @@ function FanQiePlugin:onFanQiePrevChapter()
                 if not ok or type(result) ~= "table" or not result.path then
                     Log.error("onFanQiePrevChapter download failed:", tostring(err or result))
                     _state.start_of_chapter_triggered = false
+                    _state.setChapterNavigating(false)
                     self:showError(T(_("加载上一章失败:\n%1"), display_error(err or result)))
                     return
                 end
@@ -2764,6 +2857,7 @@ function FanQiePlugin:onEndOfBook()
     -- 下一章切换：段评获取与正文下载在子进程执行，UI 线程保持响应。
     -- busy 对话框期间界面不冻结；事件返回 true 使文档保持打开，
     -- 异步完成后由 finish_next 跳转下一章。
+    _state.setChapterNavigating(true)
     local item_id = tostring(next_chapter.itemId)
     local review_enabled = _state.isReviewEnabled()
     local fetch_opts = { skip_cache_index = true }
@@ -2785,14 +2879,10 @@ function FanQiePlugin:onEndOfBook()
         end)
     end
 
-    -- 解析下一章缓存路径（含段评数据检查 + 文件系统回退查找）
+    -- 解析下一章缓存路径（已缓存正文直接用，缺段评不重下；文件系统回退查找）
     local function resolve_cached_path()
         local cached_chapters = getCachedChapters(self, book)
         local p = cached_chapters[item_id]
-        if p and review_enabled then
-            local existing_reviews = Content.load_para_reviews_index(self.settings, book.book_id, item_id)
-            if #existing_reviews == 0 then p = nil end
-        end
         if p and H.file_exists(p) then
             return p
         end
@@ -2831,7 +2921,7 @@ function FanQiePlugin:onEndOfBook()
     -- 避免与预下载争用同一书源限流配额 / 争写缓存索引。
     local function start_download()
         _state.is_downloading = true
-        ensure_busy(T(_("正在下载: %s"), next_chapter.title or ""))
+        ensure_busy(T(_("正在下载: %1"), next_chapter.title or ""))
         Async.run(function()
             local path, _ch, _rev, rate_info = Content.fetch_chapter_html(client, settings, b, next_chapter, fetch_opts)
             return { path = path, rate_info = rate_info }
@@ -2841,6 +2931,7 @@ function FanQiePlugin:onEndOfBook()
                 Log.error("onEndOfBook download failed:", tostring(err or result))
                 _state.is_downloading = false
                 _state.end_of_book_jumping = false
+                _state.setChapterNavigating(false)
                 self:showError(T(_("加载下一章失败:\n%1"), display_error(err or result)))
                 return
             end
@@ -2859,7 +2950,7 @@ function FanQiePlugin:onEndOfBook()
     -- 预下载可能正在下载本章，完成后即可走缓存命中路径，避免重复下载。
     -- 每轮先查缓存，命中即跳；未命中且仍有下载在进行则继续等（最多 ~60s）。
     if _state.is_downloading then
-        ensure_busy(T(_("正在准备: %s"), next_chapter.title or ""))
+        ensure_busy(T(_("正在准备: %1"), next_chapter.title or ""))
         local waits = 0
         local function wait_then_download()
             -- 优先查缓存：预下载可能已缓存本章
@@ -2901,6 +2992,7 @@ function FanQiePlugin:onCloseDocument()
     _state.pre_download_triggered = false
     _state.last_page_number = nil
     _state.document_opened = false
+    _state.setChapterNavigating(false)
 end
 
 function FanQiePlugin:onClose()
@@ -2959,7 +3051,7 @@ function FanQiePlugin:getCacheMenuItems()
     local size_mb = stats.total_size / (1024 * 1024)
 
     table.insert(items, {
-        text = T(_("缓存统计: %d 本书, %d 章节, %.1f MB"), stats.book_count, stats.chapter_count, size_mb),
+        text = string.format(_("缓存统计: %d 本书, %d 章节, %.1f MB"), stats.book_count, stats.chapter_count, size_mb),
         enabled_func = function() return false end,
     })
     table.insert(items, {
@@ -2989,7 +3081,7 @@ function FanQiePlugin:getCacheMenuItems()
                 cancel_text = _("取消"),
                 ok_callback = function()
                     _state.invalidateAllCache()
-                    self.client:clear_shelf_cache()
+                    self:clearShelfCache()
                     UIManager:show(InfoMessage:new{
                         text = _("章节缓存已刷新"),
                     })
@@ -3002,12 +3094,12 @@ function FanQiePlugin:getCacheMenuItems()
         keep_menu_open = true,
         callback = function()
             UIManager:show(ConfirmBox:new{
-                text = T(_("确定清除所有番茄小说缓存?\n%d 本书, %d 章节将被删除。"), stats.book_count, stats.chapter_count),
+                text = string.format(_("确定清除所有番茄小说缓存?\n%d 本书, %d 章节将被删除。"), stats.book_count, stats.chapter_count),
                 ok_text = _("清除"),
                 cancel_text = _("取消"),
                 ok_callback = function()
                     self.settings:clear_all_cache()
-                    self.client:clear_shelf_cache()
+                    self:clearShelfCache()
                     _state.invalidateAllCache()
                     UIManager:show(InfoMessage:new{
                         text = _("缓存已清除"),
@@ -3080,7 +3172,7 @@ function FanQiePlugin:showDownloadManager()
                 text = _("取消下载"),
                 callback = function()
                     UIManager:show(ConfirmBox:new{
-                        text = T(_("确定取消《%s》的下载?"), task.book_title or "未知"),
+                        text = T(_("确定取消《%1》的下载?"), task.book_title or "未知"),
                         ok_text = _("确定"),
                         cancel_text = _("取消"),
                         ok_callback = function()
@@ -3284,6 +3376,42 @@ end
 -- Book opening (from bookshelf or direct)
 -- ===========================================================================
 
+-- 用缓存目录进入阅读（离线模式或网络获取失败时的回退路径）
+function FanQiePlugin:_openBookWithCache(book, cached_chapters)
+    if not cached_chapters or #cached_chapters == 0 then return end
+    UIManager:scheduleIn(0.1, function()
+        getCachedChapters(self, book)
+    end)
+    -- 从 book.item_id（书架中的上次阅读章节）找起始索引
+    local start_index = 1
+    if book.item_id then
+        local target_item_id = tostring(book.item_id)
+        for idx, ch in ipairs(cached_chapters) do
+            if tostring(ch.itemId or ch.item_id) == target_item_id then
+                start_index = idx
+                break
+            end
+        end
+    end
+    -- 如果上次阅读的章节没有缓存，向后找第一个有缓存的章节
+    local chapter_cache = Content.load_cache_index(self.settings, book.book_id)
+    if chapter_cache then
+        local start_item_id = tostring(cached_chapters[start_index].itemId or cached_chapters[start_index].item_id or "")
+        if not chapter_cache[start_item_id] then
+            if Log then Log.info("openBook: last read chapter not cached, finding next cached") end
+            for idx = start_index, #cached_chapters do
+                local item_id = tostring(cached_chapters[idx].itemId or cached_chapters[idx].item_id or "")
+                if chapter_cache[item_id] then
+                    start_index = idx
+                    break
+                end
+            end
+        end
+    end
+    if Log then Log.info("openBookWithCache: start_index=" .. start_index) end
+    self:openChapter(book, cached_chapters, start_index)
+end
+
 function FanQiePlugin:openBook(book)
     if not self.patches_ok then
         Patches.install()
@@ -3303,37 +3431,7 @@ function FanQiePlugin:openBook(book)
     -- 有缓存 + 无网络：离线模式，直接用缓存打开，跳过云端进度同步
     if has_cache and not self:checkNetwork() then
         if Log then Log.info("openBook: offline mode, using cached chapters") end
-        UIManager:scheduleIn(0.1, function()
-            getCachedChapters(self, book)
-        end)
-        -- 从 book.item_id（书架中的上次阅读章节）找起始索引
-        local start_index = 1
-        if book.item_id then
-            local target_item_id = tostring(book.item_id)
-            for idx, ch in ipairs(cached_chapters) do
-                if tostring(ch.itemId or ch.item_id) == target_item_id then
-                    start_index = idx
-                    break
-                end
-            end
-        end
-        -- 如果上次阅读的章节没有缓存，向后找第一个有缓存的章节
-        local chapter_cache = Content.load_cache_index(self.settings, book.book_id)
-        if chapter_cache then
-            local start_item_id = tostring(cached_chapters[start_index].itemId or cached_chapters[start_index].item_id or "")
-            if not chapter_cache[start_item_id] then
-                if Log then Log.info("openBook: last read chapter not cached, finding next cached") end
-                for idx = start_index, #cached_chapters do
-                    local item_id = tostring(cached_chapters[idx].itemId or cached_chapters[idx].item_id or "")
-                    if chapter_cache[item_id] then
-                        start_index = idx
-                        break
-                    end
-                end
-            end
-        end
-        if Log then Log.info("openBook: offline start_index=" .. start_index) end
-        self:openChapter(book, cached_chapters, start_index)
+        self:_openBookWithCache(book, cached_chapters)
         return
     end
 
@@ -3345,12 +3443,9 @@ function FanQiePlugin:openBook(book)
     local pull_progress = settings:get("sync", {}).pull_on_open ~= false
 
     Async.run(function()
-        -- 子进程：缓存未命中时拉取目录；按设置拉取阅读进度
-        local fetched = nil
-        if not has_cache then
-            local b = { book_id = book_id }
-            fetched = Content.fetch_catalog(client, b)
-        end
+        -- 子进程：始终拉取最新目录（有缓存也刷新，获取新章节）；按设置拉取阅读进度
+        local b = { book_id = book_id }
+        local fetched = Content.fetch_catalog(client, b)
         local progress = nil
         if pull_progress then
             local ok_p, p = pcall(function() return client:fetch_read_progress() end)
@@ -3361,6 +3456,12 @@ function FanQiePlugin:openBook(book)
     end, function(ok, result, err)
         self:closeBusy()
         if not ok or type(result) ~= "table" then
+            -- 获取失败：有缓存则回退到缓存进入阅读
+            if has_cache then
+                if Log then Log.warn("openBook: fetch failed, fallback to cached chapters") end
+                self:_openBookWithCache(book, cached_chapters)
+                return
+            end
             self:showError(T(_("获取目录失败:\n%1"), display_error(err or result)))
             return
         end
@@ -3368,6 +3469,12 @@ function FanQiePlugin:openBook(book)
         -- 优先用子进程新拉取的目录，回退到缓存
         local chapters = result.chapters or (has_cache and cached_chapters or nil)
         if not chapters or #chapters == 0 then
+            -- 新目录为空（可能 cookie 过期）：有缓存则回退
+            if has_cache then
+                if Log then Log.warn("openBook: fetched empty chapters, fallback to cache") end
+                self:_openBookWithCache(book, cached_chapters)
+                return
+            end
             self:showInfo(_("未获取到章节"))
             return
         end
@@ -3375,11 +3482,7 @@ function FanQiePlugin:openBook(book)
         -- 持久化新拉取的目录（缓存命中时不重复写）
         if result.chapters and #result.chapters > 0 then
             Content.save_catalog_cache(settings, book_id, result.chapters)
-            _state.cached_directory = _state.cached_directory or {}
-            _state.cached_directory[book_id] = {
-                chapters = result.chapters,
-                timestamp = os.time(),
-            }
+            _state.setDirectoryCache(book_id, result.chapters)
         end
 
         UIManager:scheduleIn(0.1, function()
@@ -3402,6 +3505,20 @@ function FanQiePlugin:openBook(book)
                     end
                     break
                 end
+            end
+        end
+
+        -- 云端进度未命中当前书籍时，回退到 book.item_id（书架中的上次阅读章节）
+        if start_index == 1 and book.item_id then
+            local target_item_id = tostring(book.item_id)
+            for idx, ch in ipairs(chapters) do
+                if tostring(ch.itemId or ch.item_id) == target_item_id then
+                    start_index = idx
+                    break
+                end
+            end
+            if start_index > 1 and Log then
+                Log.info("openBook: cloud progress miss, fallback to book.item_id, start_index=" .. start_index)
             end
         end
 

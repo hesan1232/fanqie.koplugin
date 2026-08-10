@@ -22,6 +22,9 @@ function ReaderNavigation:navigateToChapter(book, chapters, chapter_index, opts)
         return false
     end
 
+    -- 标记章节切换中：防止段评异步回调在切章后弹窗闪现
+    _state.setChapterNavigating(true)
+
     -- 中断预下载（后台预下载不应阻塞用户阅读）
     -- 预下载的 on_done 会检查 pre_download_triggered，若为 false 则停止调度
     if _state.pre_download_triggered then
@@ -31,6 +34,7 @@ function ReaderNavigation:navigateToChapter(book, chapters, chapter_index, opts)
 
     if _state.is_downloading then
         -- 用户主动下载进行中：给用户明确提示
+        _state.setChapterNavigating(false)
         self:showInfo(_("正在下载中，请稍候再试"))
         return false
     end
@@ -49,31 +53,25 @@ function ReaderNavigation:navigateToChapter(book, chapters, chapter_index, opts)
     if book.cached_chapters then
         existing_path = book.cached_chapters[item_id]
     else
-        local cached = _state.getChapterIndexCache(book.book_id)
-        if cached then
-            existing_path = cached[item_id]
-        else
-            book.cached_chapters = Content and Content.load_cache_index(self.settings, book.book_id) or {}
-            existing_path = book.cached_chapters[item_id]
-        end
+        -- 确保 book.cached_chapters 与内存缓存是同一引用，
+        -- 否则后续文件系统回退 save_cache_index 会用不完整的 {} 覆盖内存缓存
+        book.cached_chapters = Content and Content.load_cache_index(self.settings, book.book_id) or {}
+        existing_path = book.cached_chapters[item_id]
     end
 
-    -- 如果段评开启且有缓存，检查是否需要重新下载（如果没有段评数据）
-    if existing_path and review_enabled then
-        local existing_reviews = Content and Content.load_para_reviews_index(self.settings, book.book_id, item_id) or {}
-        if #existing_reviews == 0 then
-            existing_path = nil  -- 没有段评数据，需要重新获取
-        end
-    end
+    -- 已缓存正文直接使用：段评数据缺失不触发重下（有些章节本就无段评）。
+    -- 想要段评的用户可通过「重新获取本章节」手动重下（按当前段评开关决定是否带段评）。
 
     -- If not found in cache index, try to find file directly from filesystem
     if not existing_path or not (H and H.file_exists(existing_path)) then
         local found_path = Content and Content.find_chapter_file(self.settings, book.book_id, item_id)
         if found_path then
-            -- Update cache index with found file
-            book.cached_chapters = book.cached_chapters or {}
+            -- 更新缓存索引：确保使用内存缓存引用，避免用不完整的 table 覆盖
+            book.cached_chapters = book.cached_chapters or (Content and Content.load_cache_index(self.settings, book.book_id)) or {}
             book.cached_chapters[item_id] = found_path
-            Content.save_cache_index(self.settings, book.book_id, book.cached_chapters)
+            if Content and Content.save_cache_index then
+                Content.save_cache_index(self.settings, book.book_id, book.cached_chapters)
+            end
             existing_path = found_path
             if Log then Log.info("found cached chapter in filesystem:", item_id) end
         end
@@ -115,6 +113,7 @@ function ReaderNavigation:navigateToChapter(book, chapters, chapter_index, opts)
         if not ok or type(result) ~= "table" or not result.path then
             if Log then Log.error("navigateToChapter download failed:", tostring(err or result)) end
             _state.is_downloading = false
+            _state.setChapterNavigating(false)
             self_ref:showError(T(_(opts.error_message or "下载章节失败:\n%1"),
                 self_ref:displayError(err or result)))
             return
@@ -128,14 +127,25 @@ function ReaderNavigation:navigateToChapter(book, chapters, chapter_index, opts)
         local path = result.path
         local para_reviews = result.para_reviews
 
-        book.cached_chapters = book.cached_chapters or {}
-        book.cached_chapters[item_id] = path
-
-        -- 持久化 cache_index
-        if Content and Content.save_cache_index then
+        -- 确保 book.cached_chapters 与内存缓存是同一引用：
+        -- 之前 book.cached_chapters = {} 和 cc = load_cache_index() 是两个不同 table，
+        -- 预下载后续用 book.cached_chapters（只有当前章节）覆盖内存缓存，
+        -- 导致之前下载的章节在目录中丢失 ✓ 对号。
+        if Content and Content.load_cache_index and Content.save_cache_index then
             local cc = Content.load_cache_index(settings, book.book_id) or {}
+            -- 合并 book.cached_chapters 中已有条目到 cc（内存缓存）
+            if book.cached_chapters then
+                for k, v in pairs(book.cached_chapters) do
+                    cc[k] = v
+                end
+            end
             cc[item_id] = path
+            -- 让 book.cached_chapters 指向内存缓存，后续预下载追加到此同一 table
+            book.cached_chapters = cc
             Content.save_cache_index(settings, book.book_id, cc)
+        else
+            book.cached_chapters = book.cached_chapters or {}
+            book.cached_chapters[item_id] = path
         end
 
         -- 存储段评数据到全局状态
@@ -172,6 +182,8 @@ end
 
 function ReaderNavigation:showReaderUI(path, chapter)
     _state.current_document_path = path
+    -- 章节切换已完成（新文档即将加载），清除导航标志
+    _state.setChapterNavigating(false)
     local ReaderUI = require("apps/reader/readerui")
     -- 不用 switchDocument（其内部先 onClose 再 showReader，中间 forceRePaint 会闪现书架）
     -- 直接用 showReader：doShowReader 在 nextTick 中关闭旧实例并打开新实例，无闪现
@@ -232,13 +244,7 @@ function ReaderNavigation:preDownloadChapters(book, chapters, current_index)
         local cached_chapters = book.cached_chapters or Content.load_cache_index(settings, book.book_id) or {}
         local existing_path = cached_chapters[item_id]
 
-        -- 如果段评开启，还需检查是否有段评数据
-        if existing_path and review_enabled then
-            local existing_reviews = Content and Content.load_para_reviews_index(settings, book.book_id, item_id) or {}
-            if #existing_reviews == 0 then
-                existing_path = nil  -- 没有段评数据，需要重新获取
-            end
-        end
+        -- 已缓存正文直接跳过：段评数据缺失不触发重下
 
         if existing_path and H and H.file_exists(existing_path) then
             -- 已缓存，跳过

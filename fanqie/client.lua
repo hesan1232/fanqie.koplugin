@@ -22,7 +22,7 @@ if not ok_json then
 end
 
 local DEFAULT_TIMEOUT_SECONDS = 15
-local SHELF_CACHE_TTL = 10 * 60 -- 10 minutes for shelf cache
+local SHELF_CACHE_TTL = 5 * 60 -- 5 minutes for shelf cache
 local unpack_args = unpack or table.unpack
 
 -- Rate limiting is now handled per-source by fanqie.sources.SourceManager,
@@ -31,6 +31,9 @@ local unpack_args = unpack or table.unpack
 local Client = {}
 Client.__index = Client
 
+-- SHELF_CACHE：fetch_shelf_detail 内部短缓存，按 cookie_hash 做 key，10 分钟 TTL。
+-- 仅用于避免短时间内重复网络请求，不是显示层数据源。
+-- 显示层数据源由 bookshelf.lua 的 SHELF_MEM_CACHE（内存主源 + 文件后备）承担。
 local SHELF_CACHE = {}
 
 local function header_value(headers, name)
@@ -750,39 +753,43 @@ function Client:qingtian_get_content(item_id, book_id, opts)
 end
 
 -- 晴天段评 API
--- ident: 来自 <comment> 标签的 ident URL（已注入 base_url 和 book_id）
--- 参考 kindle-forge 的 _build_para_review_ident：
---   JSON 端点是 /para_review（不是 /get_para_review）
---   只保留 book_id/item_id/para/source/cursor 参数
+-- ident: 来自 <comment> 标签的 ident URL（已注入 base_url、book_id、ssionid 等）
+-- 抓包验证：正确的 JSON 端点是 /api/fanqie/comment/paragraph/list（不是 /para_review）
+--   参数: book_id(Base64), item_id, item_version, author_user_id, cursor, para_index
+--   响应: data.data_list[].comment.{common,stat}, data.common_list_info.total
 function Client:qingtian_get_para_review(ident)
     local token, device_id, detected_url = self:_qingtian_ensure_login()
     local qingtian = self.settings:get_source("qingtian")
     local server_url = detected_url or H.trim(qingtian.server_url or "")
-    
-    -- 构建 JSON 端点 URL：/get_para_review → /para_review
-    local review_url = ident
-    if review_url:find("/get_para_review", 1, true) then
-        review_url = review_url:gsub("/get_para_review", "/para_review")
-    elseif not review_url:find("/para_review", 1, true) then
-        local base = server_url:gsub("/+$", "")
-        local query = review_url:match("%?(.+)$") or ""
-        local params = {}
-        for k, v in query:gmatch("([^&=]+)=([^&]*)") do
-            if k == "book_id" or k == "item_id" or k == "para" or k == "source" or k == "cursor" then
-                table.insert(params, k .. "=" .. v)
-            end
-        end
-        review_url = base .. "/para_review"
-        if #params > 0 then
-            review_url = review_url .. "?" .. table.concat(params, "&")
-        end
+    local base = server_url:gsub("/+$", "")
+
+    -- 从 ident URL 中提取段评请求所需的参数
+    -- ident 格式: {base}/get_para_review?book_id={b64}&ssionid=...&item_id=...&para=N&source=...&author_user_id=...&item_version=...
+    local function extract_param(url, key)
+        local val = url:match("[?&]" .. key .. "=([^&]*)")
+        return val or ""
     end
-    
+
+    local p_book_id    = extract_param(ident, "book_id")
+    local p_item_id    = extract_param(ident, "item_id")
+    local p_para       = extract_param(ident, "para")
+    local p_author_uid = extract_param(ident, "author_user_id")
+    local p_item_ver   = extract_param(ident, "item_version")
+
+    -- 构建正确的段评 API URL
+    local review_url = string.format(
+        "%s/api/fanqie/comment/paragraph/list?book_id=%s&item_id=%s&item_version=%s&author_user_id=%s&cursor=&para_index=%s",
+        base, p_book_id, p_item_id, p_item_ver, p_author_uid, p_para
+    )
+
+    -- 段评 API 不需要 qttoken 认证（抓包验证），但保留 token Cookie 不影响
     local cookie_str = "qttoken=" .. token
     if device_id and device_id ~= "" then
         cookie_str = cookie_str .. ";deviceId=" .. device_id
     end
-    
+    -- 添加段评功能开关 Cookie（抓包中有 fqpara=on）
+    cookie_str = cookie_str .. ";fqpara=on"
+
     local headers = {
         ["User-Agent"] = FanQie.MOBILE_UA,
         ["Accept"] = "application/json, text/plain, */*",
@@ -790,6 +797,7 @@ function Client:qingtian_get_para_review(ident)
         ["Accept-Encoding"] = "identity",
         ["Connection"] = "keep-alive",
         ["Cookie"] = cookie_str,
+        ["Referer"] = base .. "/get_para_review?book_id=" .. p_book_id .. "&item_id=" .. p_item_id,
     }
     
     local ok_logger, logger_mod = pcall(require, "fanqie.logger")
@@ -1586,19 +1594,20 @@ function Client:dahuilang_get_content(book_id, item_id, opts)
 end
 
 -- 大灰狼段评 API
--- ident: 来自 <comment> 标签的 ident URL（已注入 base_url 和 book_id）
--- 参考 kindle-forge 的 _build_para_review_ident：
---   JSON 端点是 /para_review（不是 /get_para_review）
---   只保留 book_id/item_id/para/source/cursor 参数
+-- ident: 来自 <comment> 标签的 ident URL（已注入 base_url、book_id、ssionid 等）
+-- 大灰狼段评端点：/para_review（已实测跑通，保持原获取方式）
+--   参数: book_id, item_id, para, source, cursor
+--   响应: data.comments[], data.total, data.has_more, data.next_cursor
 function Client:dahuilang_get_para_review(ident)
     local token, device_id, detected_url = self:_dahuilang_ensure_login()
     local dl = self.settings:get_source("dahuilang")
     local server_url = detected_url or H.trim(dl.server_url or "")
-    
-    if server_url == "" then
+    local base = server_url:gsub("/+$", "")
+
+    if base == "" then
         error("大灰狼服务器地址未配置")
     end
-    
+
     -- 构建 JSON 端点 URL：/get_para_review → /para_review
     -- 只保留 book_id/item_id/para/source/cursor 参数
     local review_url = ident
@@ -1606,8 +1615,6 @@ function Client:dahuilang_get_para_review(ident)
         review_url = review_url:gsub("/get_para_review", "/para_review")
     elseif not review_url:find("/para_review", 1, true) then
         -- 如果 ident 不是标准端点，尝试从查询参数构建
-        local base = server_url:gsub("/+$", "")
-        -- 提取查询参数
         local query = review_url:match("%?(.+)$") or ""
         local params = {}
         for k, v in query:gmatch("([^&=]+)=([^&]*)") do
@@ -1620,12 +1627,12 @@ function Client:dahuilang_get_para_review(ident)
             review_url = review_url .. "?" .. table.concat(params, "&")
         end
     end
-    
+
     local cookie_str = "qttoken=" .. token
     if device_id and device_id ~= "" then
         cookie_str = cookie_str .. ";deviceId=" .. device_id
     end
-    
+
     local headers = {
         ["User-Agent"] = FanQie.MOBILE_UA,
         ["Accept"] = "application/json, text/plain, */*",

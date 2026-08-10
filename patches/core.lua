@@ -1,6 +1,10 @@
 local M = {
     _mark = "_fanqie_patch",
     _mark_link = "_fanqie_patch_link",
+    -- 导航补丁（ReaderPaging & ReaderRolling）版本化标记：
+    -- 升级时改变此值即可强制重新安装，无需改动 _mark / _mark_link。
+    -- v3: 回退向前翻页拦截（前天版本逻辑），仅保留向后翻页的上一章拦截
+    _mark_nav = "_fanqie_patch_nav_v3",
 }
 
 local H = require("fanqie.helper")
@@ -15,6 +19,11 @@ M.verifyPatched = function(modname)
     if ReaderToc[M._mark] ~= true then return false end
     local ReaderLink = require("apps/reader/modules/readerlink")
     if ReaderLink[M._mark_link] ~= true then return false end
+    -- 导航补丁（ReaderPaging & ReaderRolling）— 版本化检查
+    local ReaderPaging = require("apps/reader/modules/readerpaging")
+    if ReaderPaging[M._mark_nav] ~= true then return false end
+    local ReaderRolling = require("apps/reader/modules/readerrolling")
+    if ReaderRolling[M._mark_nav] ~= true then return false end
     return true
 end
 
@@ -81,7 +90,7 @@ M.install = function()
     -- 补丁3：ReaderPaging — 在第一页前翻页时触发上一章
     -- =========================================================================
     local ReaderPaging = require("apps/reader/modules/readerpaging")
-    if not ReaderPaging[M._mark] then
+    if not ReaderPaging[M._mark_nav] then
         local original_onGotoViewRel = ReaderPaging.onGotoViewRel
         function ReaderPaging:onGotoViewRel(diff, no_page_turn)
             local old_pos = self:getTopPage()
@@ -92,14 +101,14 @@ M.install = function()
             end
             return result
         end
-        ReaderPaging[M._mark] = true
+        ReaderPaging[M._mark_nav] = true
     end
 
     -- =========================================================================
     -- 补丁4：ReaderRolling — 滚动模式下第一页前翻页触发上一章
     -- =========================================================================
     local ReaderRolling = require("apps/reader/modules/readerrolling")
-    if not ReaderRolling[M._mark] then
+    if not ReaderRolling[M._mark_nav] then
         local original_onGotoViewRel_rolling = ReaderRolling.onGotoViewRel
         ReaderRolling.onGotoViewRel = function(rolling_self, diff)
             local scroll_mode = rolling_self.view.view_mode == "scroll"
@@ -111,7 +120,7 @@ M.install = function()
             end
             return true
         end
-        ReaderRolling[M._mark] = true
+        ReaderRolling[M._mark_nav] = true
     end
 
     -- =========================================================================

@@ -23,6 +23,8 @@ local M = {
     document_opened = false,
     -- onEndOfBook 异步跳章重入保护：异步下载下一章期间为 true，抑制末页重复触发
     end_of_book_jumping = false,
+    -- 章节切换中标志：navigateToChapter 期间为 true，防止段评异步回调在切章后弹窗闪现
+    chapter_navigating = false,
     -- 段评相关状态
     enable_review = false,           -- 段评开关
     current_para_reviews = {},      -- 当前章节的段评数据
@@ -178,6 +180,36 @@ M.invalidateDirectoryCache = function(book_id)
     end
 end
 
+-- ===== 目录内存缓存：内存主源 + 文件后备 =====
+-- 结构：cached_directory[book_id] = { chapters = {...}, timestamp = os.time() }
+-- 与 chapter_index 一致，采用 CACHE_EXPIRY_SECONDS (24h) TTL，避免进程长时间驻留后
+-- 内存数据与文件/服务器严重脱节。
+--
+-- 注意：Async.run 的 work_func 在子进程执行，子进程内存不回传父进程。
+--       因此 setDirectoryCache 只能在父进程（Async 回调 / 主线程）调用，
+--       子进程内调用无效。当前所有写入点都在父进程，符合此约束。
+M.setDirectoryCache = function(book_id, chapters)
+    if not book_id or not chapters then return end
+    M.cached_directory = M.cached_directory or {}
+    M.cached_directory[book_id] = {
+        chapters = chapters,
+        timestamp = os.time(),
+    }
+end
+
+M.getDirectoryCache = function(book_id)
+    if not M.cached_directory then return nil end
+    local cached = M.cached_directory[book_id]
+    if not cached then return nil end
+    local now = os.time()
+    if cached.timestamp and (now - cached.timestamp) < CACHE_EXPIRY_SECONDS then
+        return cached.chapters
+    end
+    -- 过期：清理单条，避免累计陈旧数据
+    M.cached_directory[book_id] = nil
+    return nil
+end
+
 M.invalidateAllCache = function()
     M.cached_chapter_index = {}
     M.cached_directory = {}
@@ -222,6 +254,15 @@ end
 M.clearParaReviews = function()
     M.current_para_reviews = {}
     M.current_para_index = 0
+end
+
+-- 章节切换标志：navigateToChapter 期间为 true，防止段评异步回调在切章后弹窗闪现
+M.setChapterNavigating = function(v)
+    M.chapter_navigating = v == true
+end
+
+M.isChapterNavigating = function()
+    return M.chapter_navigating == true
 end
 
 -- 下载管理

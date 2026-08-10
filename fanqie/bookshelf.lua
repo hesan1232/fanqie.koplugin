@@ -18,6 +18,14 @@ local ok_Content, Content = pcall(require, "fanqie.content")
 local ok_state, _state = pcall(require, "fanqie.state")
 local ok_Async, Async = pcall(require, "fanqie.async")
 
+-- ===== 书架内存缓存：内存主源 + 文件后备 =====
+-- 存精简后的 books 数组（与 shelf_cache.lua 同构）。
+-- 与 client.lua 的 SHELF_CACHE 职责区分：
+--   - SHELF_MEM_CACHE（本变量）：显示层数据源，进程生命周期内有效，无 TTL
+--   - SHELF_CACHE（client.lua）：fetch_shelf_detail 内部短缓存，按 cookie_hash 做 key，
+--     10 分钟 TTL，避免短时间内重复网络请求
+local SHELF_MEM_CACHE = nil
+
 local function log_error(err)
     local text = tostring(err):gsub("[%c]+", " ")
     if #text > 500 then
@@ -46,8 +54,23 @@ local function get_shelf_cache_path(settings)
     return cache_dir .. "/shelf_cache.lua"
 end
 
+-- 浅拷贝 books 数组（仅数组层）：避免 do_sort/showBookList 的 table.sort 原地排序
+-- 污染内存缓存的原始顺序。内部 book 对象仍共享引用，download_covers 加的
+-- cover_path 会影响缓存中的 book 对象，但该污染无害（有益——跳过重复下载）。
+local function shallow_copy_books(books)
+    local copy = {}
+    for i, b in ipairs(books) do
+        copy[i] = b
+    end
+    return copy
+end
+
 local function save_shelf_cache(settings, books)
     if not settings or not books or type(books) ~= "table" then return end
+    -- 写内存缓存（浅拷贝：调用方后续的 do_sort/showBookList 会原地修改 books，
+    -- 存浅拷贝保持内存缓存的原始顺序不被污染）
+    SHELF_MEM_CACHE = shallow_copy_books(books)
+    -- 写文件缓存（持久化后备）
     local path = get_shelf_cache_path(settings)
     local lines = { "return {" }
     for i, b in ipairs(books) do
@@ -80,7 +103,16 @@ local function save_shelf_cache(settings, books)
     end
 end
 
+-- 书架缓存读取：内存主源 + 文件后备 + 回填
+-- 优先查内存缓存，命中直接返回，避免文件 IO；
+-- 未命中时读文件缓存，并回填内存，后续读取全部走内存。
+-- 返回浅拷贝：避免调用方 do_sort/showBookList 的 table.sort 原地排序污染内存缓存。
 local function load_shelf_cache(settings)
+    -- 1. 先查内存缓存
+    if SHELF_MEM_CACHE and #SHELF_MEM_CACHE > 0 then
+        return shallow_copy_books(SHELF_MEM_CACHE)
+    end
+    -- 2. 未命中：读文件缓存
     local path = get_shelf_cache_path(settings)
     if not H or not H.file_exists or not H.file_exists(path) then
         if Log then Log.info("shelf cache: file not found at " .. path) end
@@ -96,7 +128,9 @@ local function load_shelf_cache(settings)
     end)
     if ok and type(data) == "table" and #data > 0 then
         if Log then Log.info("shelf cache loaded: " .. tostring(#data) .. " books") end
-        return data
+        -- 3. 回填内存缓存（存原始引用，调用方拿到的是浅拷贝不会污染 data）
+        SHELF_MEM_CACHE = data
+        return shallow_copy_books(data)
     end
     if not ok then
         if Log then Log.warn("shelf cache pcall failed: " .. tostring(data)) end
@@ -106,7 +140,29 @@ end
 
 local Bookshelf = {}
 
-function Bookshelf:showBookshelf()
+-- 清除书架缓存：三层同步清理
+--   1. SHELF_MEM_CACHE（显示层内存缓存）
+--   2. client.SHELF_CACHE（API 短缓存）
+--   3. shelf_cache.lua（文件缓存）
+function Bookshelf:clearShelfCache()
+    -- 1. 清显示层内存缓存
+    SHELF_MEM_CACHE = nil
+    -- 2. 清 client 的 API 短缓存
+    if self.client and self.client.clear_shelf_cache then
+        self.client:clear_shelf_cache()
+    end
+    -- 3. 删文件缓存
+    local path = get_shelf_cache_path(self.settings)
+    if H and H.file_exists and H.file_exists(path) then
+        os.remove(path)
+        if Log then Log.info("shelf cache file deleted: " .. path) end
+    end
+end
+
+function Bookshelf:showBookshelf(opts)
+    opts = opts or {}
+    local force_refresh = opts.force_refresh == true
+
     if not self.patches_ok then
         local Patches = require("patches.core")
         Patches.install()
@@ -132,55 +188,85 @@ function Bookshelf:showBookshelf()
         end
     end
 
-    -- 优先显示本地缓存，有网后台刷新
-    local cached_shelf = load_shelf_cache(self.settings)
-    if cached_shelf and #cached_shelf > 0 then
-        do_sort(cached_shelf)
-        self:showBookList(cached_shelf)
-        -- 后台异步刷新
-        if self:checkNetwork() then
-            self:showBusy(_("正在刷新书架..."))
-            local plugin = self
-            if ok_Async and Async then
-                Async.run(function()
-                    return plugin:get_shelf()
-                end, function(ok, result, err)
-                    plugin:closeBusy()
-                    if ok and type(result) == "table" and #result > 0 then
-                        save_shelf_cache(plugin.settings, result)
-                        do_sort(result)
-                        plugin:showBookList(result)
-                    end
-                end, { poll_interval = 0.3, timeout = 60 })
-            end
+    -- 回退到文件缓存（force_refresh 获取失败时使用）
+    local function fallback_to_cache()
+        local cached = load_shelf_cache(self.settings)
+        if cached and #cached > 0 then
+            do_sort(cached)
+            self:showBookList(cached)
+            return true
         end
-        return
+        return false
     end
 
-    -- 无缓存 + 有网：正常获取
+    -- 非强制刷新：优先显示本地缓存，有网后台刷新
+    if not force_refresh then
+        local cached_shelf = load_shelf_cache(self.settings)
+        if cached_shelf and #cached_shelf > 0 then
+            do_sort(cached_shelf)
+            self:showBookList(cached_shelf)
+            -- 后台异步刷新
+            if self:checkNetwork() then
+                self:showBusy(_("正在刷新书架..."))
+                local plugin = self
+                if ok_Async and Async then
+                    Async.run(function()
+                        return plugin:get_shelf()
+                    end, function(ok, result, err)
+                        plugin:closeBusy()
+                        if ok and type(result) == "table" and #result > 0 then
+                            save_shelf_cache(plugin.settings, result)
+                            do_sort(result)
+                            plugin:showBookList(result)
+                        end
+                    end, { poll_interval = 0.3, timeout = 60 })
+                end
+            end
+            return
+        end
+    end
+
+    -- force_refresh 或无缓存：直接从网络获取
+    -- 获取成功后 save_shelf_cache 覆盖旧缓存；失败时回退到旧缓存
     if not self:checkNetwork() then
+        if force_refresh and fallback_to_cache() then
+            self:showInfo(_("无网络，显示缓存数据"))
+            return
+        end
         self:showError(_("无网络且无书架缓存，请先联网获取书架"))
         return
     end
 
-    self:showBusy(_("正在获取书架..."))
+    self:showBusy(force_refresh and _("正在刷新书架...") or _("正在获取书架..."))
     local plugin = self
     if ok_Async and Async then
         Async.run(function()
-            return plugin:get_shelf()
+            -- force_refresh=true 跳过 client 内存缓存，从网络获取
+            return plugin:get_shelf(force_refresh)
         end, function(ok, result, err)
             plugin:closeBusy()
             if not ok or type(result) ~= "table" then
                 if Log then Log.error("fetch shelf failed:", log_error(err or result)) end
+                -- 获取失败：回退到旧缓存，不删除任何数据
+                if force_refresh and fallback_to_cache() then
+                    plugin:showInfo(_("刷新失败，显示缓存数据"))
+                    return
+                end
                 plugin:showError(T(_("获取书架失败:\n%1"), display_error(err or result)))
                 return
             end
             if Log then Log.debug("shelf fetched:", #result, "books") end
             if not result or #result == 0 then
+                -- 空结果可能是 cookie 过期，回退到旧缓存
+                if force_refresh and fallback_to_cache() then
+                    plugin:showInfo(_("获取数据为空，显示缓存数据"))
+                    return
+                end
                 plugin:showInfo(_("书架为空，请先在番茄小说App中添加书籍"))
                 return
             end
 
+            -- 获取成功：覆盖旧缓存
             save_shelf_cache(plugin.settings, result)
             do_sort(result)
             plugin:showBookList(result)
@@ -282,17 +368,30 @@ function Bookshelf:showBookList(books)
     self:download_covers(books)
 
     local ShelfView = require("fanqie.shelf_view")
-    self.book_list_menu = ShelfView.show{
+    local plugin = self
+    local opts = {
         title = _("我的书架"),
         books = books,
         show_covers = true,
         on_select = function(book)
-            self:showBookDetail(book)
+            plugin:showBookDetail(book)
         end,
         on_close = function()
-            self.book_list_menu = nil
+            plugin.book_list_menu = nil
+        end,
+        on_refresh = function()
+            -- 不关闭旧菜单：数据回来后由 showBookList → ShelfView.update 动态更新
+            plugin:showBookshelf({force_refresh = true})
         end,
     }
+
+    if self.book_list_menu then
+        -- 旧菜单存在：动态更新内容，避免关闭重开导致闪烁
+        ShelfView.update(self.book_list_menu, books, opts)
+    else
+        -- 首次显示：创建新菜单
+        self.book_list_menu = ShelfView.show(opts)
+    end
 end
 
 function Bookshelf:showBookDetail(book)
@@ -466,7 +565,20 @@ function Bookshelf:showChapterListing(book)
 end
 
 function Bookshelf:_displayChapterListing(book, chapters)
-    local cached = self.settings:get("cached_chapter_index." .. book.book_id, {})
+    -- 缓存索引存储在文件（cache_index.lua），不在 settings 里。
+    -- 之前用 settings:get("cached_chapter_index."..book_id) 读取，永远为空，
+    -- 导致目录里已下载章节不显示 ✓ 对号。
+    -- 刷新内存缓存：从阅读器返回书架后，内存缓存可能因旧 bug 不完整，
+    -- 强制重新从文件加载确保目录对号准确
+    local cached = {}
+    if ok_state and _state and _state.invalidateChapterIndexCache then
+        _state.invalidateChapterIndexCache(book.book_id)
+    end
+    if ok_Content and Content and Content.load_cache_index then
+        cached = Content.load_cache_index(self.settings, book.book_id) or {}
+        -- 同步到 book.cached_chapters，供后续 navigateToChapter 直接使用
+        book.cached_chapters = cached
+    end
 
     local items = {}
     for i, chapter in ipairs(chapters) do
