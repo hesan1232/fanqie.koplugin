@@ -169,6 +169,8 @@ function DownloadProgress:setState(state)
         prepare = _("准备下载"),
         catalog = _("读取目录"),
         content = _("获取章节正文"),
+        -- 图集/漫画一章几十页大图，图片阶段单独报（并带「第 N/M 页」）
+        images = _("下载章节图片"),
         rate_limit = _("等待请求恢复"),
         done = _("下载完成"),
         error = _("下载失败"),

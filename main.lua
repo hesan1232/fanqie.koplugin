@@ -159,6 +159,36 @@ local function display_error(err)
     return text
 end
 
+--- 章内进度回调工厂（给 Async.run 的 `on_heartbeat`）。
+--- 图集/漫画一章就是几十页整页大图、整章几分钟，而 showBusy 只写一句静态文案
+--- 且**没有任何进度**：用户分不清「在下」还是「卡死」。这里按心跳把页码显示出来。
+--- text 格式见 fanqie/content.lua 的 heartbeat："尝试/总数[/失败数]"。
+--- 节流：每次更新都要重建 InfoMessage（close + show + forceRePaint，墨水屏会闪），
+--- 所以只在跨过约 1/5 的页数台阶时更新。
+--- @param plugin table   FanQiePlugin 实例（用它的 showBusy）
+--- @param chapter table  当前章节（取标题）
+--- @param is_comic boolean  仅图集/漫画才值得显示（文字章没有几十页图片）
+--- @return function|nil
+local function make_page_heartbeat(plugin, chapter, is_comic)
+    if not is_comic or not plugin then return nil end
+    local title = (chapter and chapter.title) or ""
+    local last_shown = 0
+    return function(text)
+        local done_s, total_s, failed_s = tostring(text):match("^(%d+)/(%d+)/?(%d*)$")
+        local done, total = tonumber(done_s), tonumber(total_s)
+        if not (done and total and total > 0) then return end
+        local failed = tonumber(failed_s) or 0
+        local step = math.max(1, math.floor(total / 5))
+        if done < total and done - last_shown < step then return end
+        last_shown = done
+        local msg = T(_("正在下载图集: %1\n（第 %2/%3 页）"), title, done, total)
+        if failed > 0 then
+            msg = msg .. T(_("（失败 %1 页）"), failed)
+        end
+        plugin:showBusy(msg)
+    end
+end
+
 -- Shared state across FileManager and ReaderUI instances
 -- (KOReader creates separate WidgetContainer instances for each)
 local ok_state, _state = pcall(require, "fanqie.state")
@@ -231,7 +261,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.0",
+    version = Info and Info.version or "2.16.1",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -3773,7 +3803,9 @@ function FanQiePlugin:navigateToChapter(book, chapters, chapter_index, opts)
     -- 图集/漫画（book_type=1）一章就是几十张整页大图，光下载就得几分钟 ——
     -- 文案里先说一声，免得用户当成卡死。真卡死仍会被 Async 的停滞超时掐掉
     -- （只要还有图在落盘，心跳就会给超时续期，见 fanqie/async.lua）。
-    if book.book_type == 1 then
+    -- 🔴 用 tonumber：书城/书架接口给的 book_type 是**字符串** "1"（实测）。
+    local comic = tonumber(book.book_type) == 1
+    if comic then
         self:showBusy(T(_("正在下载图集: %1\n（整章为多页大图，请稍候）"), chapter.title or ""))
     else
         self:showBusy(T(_("正在下载: %1"), chapter.title or ""))
@@ -3819,8 +3851,13 @@ function FanQiePlugin:navigateToChapter(book, chapters, chapter_index, opts)
         if opts.after_navigate then
             UIManager:scheduleIn(1.0, opts.after_navigate)
         end
-    end, { delay = 0.1, poll_interval = 0.2, timeout = 60,
-           heartbeat = fetch_opts.heartbeat_path })
+    end, { delay = 0.1, poll_interval = 0.2,
+           -- 停滞上限（有心跳时掐的不是总时长，见 fanqie/async.lua）：
+           -- 图集单页 ~570KB，慢网下单次请求就可能逼近 socket 超时，给 180s 余量。
+           timeout = comic and 180 or 60,
+           heartbeat = fetch_opts.heartbeat_path,
+           -- 「正在下载图集…（第 N/M 页）」：没有它用户分不清在下还是卡死
+           on_heartbeat = make_page_heartbeat(self, chapter, comic) })
 
     return true
 end

@@ -1,16 +1,16 @@
 {
-  "version": "2.16.0",
-  "name": "番茄小说 2.16.0",
+  "version": "2.16.1",
+  "name": "番茄小说 2.16.1",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.0/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.1/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.0/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.0/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.0/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.0/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.1/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.1/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.1/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.1/fanqie.koplugin.zip"
   ],
-  "size": 369547,
-  "sha256": "206ae3b8c25eb308e9d9872bc5f9cefe18a6c95c95e01dc4ef3ef51cd8a82961",
-  "notes": "**修书城「一闪一闪 + 字越变越小」与切榜卡顿；筛选项下沉为 tab 下的筛选行（短名单改弹窗）；书架按钮文案按实际状态给、读完退出时提示加入书架；读番茄章节时不再弹 KOReader 的「已到文档末尾」框、阅读界面新增「书籍信息」；段评图片回填只重绘评论区、不再整屏闪；评论区字号跟随阅读字号、关掉后不再留图片残影；修「从书城点开始阅读跳到最后一章 / 切章进度传错章」；图集下载不再被超时掐死；书架改显连载状态；修下载管理与评论区**\n\n- **改善**：**书城筛选的「下拉」不再一律跳整页列表** —— 排序 / 状态 / 性别 / 分类浏览 /\n  换榜别这些只有 2~5 项的，现在直接弹一个**小窗**（居中、点窗外或按返回就关，末尾有「取消」）；\n  只有条目多的（**排行榜 30 条**、**分类 150+ 条**）才开全屏列表。为什么留两套：\n  koreader **没有「下拉浮层」这种原生控件** —— 能弹小窗的 `ButtonDialog` 只有「一整条长滚动」\n  （**没有分页、没有分组分隔头、没有页脚**），150 多条会变成十几屏扫不动的长串；\n  能翻页 + 放分组头的只有全屏 `Menu`（它的尺寸不传就是整屏）。阈值 8 项，\n  带分组分隔头的一律走全屏。\n- **改善**：**读番茄章节时不再弹 KOReader 的「已到文档末尾」框** —— 番茄小说**一章就是一个\n  html 文件**，在 KOReader 眼里「读完一章」＝「读完一本书」，于是读完最后一页再往后翻时\n  （判据在 `readerrolling.lua:914/928`：`diff > 0 and old_page == self.current_page`）会按它"
+  "size": 375762,
+  "sha256": "b99cf374ef0dd37cbc5596ca4ed34d5d430c0ca0f177e83413aab170619542a0",
+  "notes": "**修「批量下载图集『获取章节正文』一直 0%、很久之后弹 (失败 N 章)」：图片失败也写心跳（不再被误判成停滞）+ 进度框显示章内页数与剩余时间 + 完成提示直接给出失败原因；图片整体失败不再静默落盘坏章节**\n\n- **修**：**图集批量下载「一直 0%，很久之后 (失败 N 章)」** —— 根因是**心跳只在图片下载\n  「成功」之后才写**：图片服务器一旦不可达或很慢（每张都要等满 15s 的 socket 超时），\n  子进程就**一次心跳都没有**，父进程把「一直在失败」读成「停滞」，90 秒到点把整章掐掉，\n  于是**每一章都这样**。现在**每次图片尝试（成功、失败都算）都写心跳**，进度框显示\n  「第 N/M 页（失败 K）」和**本章剩余时间**，进度条也按**章内比例**走（不再等整章下完\n  才动一格）；图集单章的停滞上限由 90s 放宽到 180s（真卡死照样掐）。\n- **修**：**图片整体失败时不再静默存一份坏章节** —— 以前图片下载异常被 `pcall` 吞掉，\n  照旧落盘一份「全是远程 URL 的 HTML」，用户看到「下载成功」、打开却是一片空白/裂图。\n  现在：连续 8 张失败且 0 张成功 ⇒ 立刻中断本章（不白等 3~12 分钟）；本章远程图 ≥5 张\n  且一张都没下下来 ⇒ 本章判失败；漫画（`book_type=1`）**半章以上**图片失败也判失败。"
 }

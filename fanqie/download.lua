@@ -44,6 +44,29 @@ local function formatEta(sec)
     return string.format("%d时%d分", h, m)
 end
 
+-- 图集/漫画：`book_type == 1`（正文就是几十张整页大图）。
+-- 🔴 用 tonumber 而不是 `== 1`：书城/书架接口给的是**字符串** "1"（实测），
+--    只比数字会让漫画被判成小说，从而用不上更宽的停滞上限。
+local function is_comic_book(book)
+    return tonumber(book and book.book_type) == 1
+end
+
+-- 把子进程回传的错误压成一行「人话」，直接写进下载完成提示。
+-- 与 main.lua 的 display_error 同源思路：只留首行、去掉 "文件.lua:行号: " 前缀、限长；
+-- 三个已知的「机器话」翻译成人话（否则用户看到 "async timeout" 只会更迷惑）。
+local function brief_error(err)
+    local text = tostring(err or "")
+    text = text:match("^[^\r\n]+") or text
+    if text == "async timeout" then
+        return _("下载超时：长时间没有任何进展（网络极慢或图片服务器不可达）")
+    elseif text == "subprocess exited without output" then
+        return _("下载进程异常退出（设备内存不足或磁盘写失败）")
+    end
+    text = text:gsub("^[%w%._/\\-]+%.lua:%d+:%s*", "")
+    if #text > 160 then text = text:sub(1, 160) .. "..." end
+    return text
+end
+
 -- 获取书的已缓存章节索引（item_id -> path），与 main.lua getCachedChapters 等价
 local function getCachedChapters(settings, book)
     if not book then return {} end
@@ -139,6 +162,16 @@ function Download.execute(parent, book, chapters, start_idx, end_idx)
         end_idx = end_idx,
         total = total,
         review_enabled = false,
+        -- 章内进度（由 on_page_heartbeat 维护，见该函数的说明）
+        current_title = "",
+        chapter_started_at = nil,
+        pages_done = 0,
+        pages_total = 0,
+        pages_failed = 0,
+        -- 最近一次失败的原因：必须写进完成提示，否则用户只看到「失败 N 章」，
+        -- 真正的原因（超时 / 图片不可达 / 写盘失败）只剩日志里有。
+        last_error = nil,
+        last_error_chapter = nil,
     }
 
     -- 预先计算段评开关（只读，跨子进程保持一致）
@@ -151,17 +184,56 @@ function Download.execute(parent, book, chapters, start_idx, end_idx)
         state.cached_chapters = Content.load_cache_index(settings, book.book_id) or {}
     end
 
-    local function updateProgress(stage, chapter_title)
+    local function updateProgress(stage, chapter_title, message, percent)
         dialog:setState{
             stage = stage,
             current = state.downloaded,
             total = state.total,
             chapter = chapter_title,
+            message = message,
+            percent = percent,
         }
         -- 更新全局状态
         if ok_state and _state then
             _state.updateDownloadProgress(state.downloaded, state.total, chapter_title or "")
         end
+    end
+
+    -- 章内进度（Async 的心跳回调，跑在 UI 线程）。
+    -- 🔴 为什么必须有：图集/漫画一章就是几十页大图、整章几分钟，而进度百分比只按
+    --    「已完成的**章节**数」算 ⇒ 第一章期间一直是 0%，用户只能看到「卡住」
+    --    （实测反馈：「获取章节正文一直 0%，过了很久之后下载完成 失败了」）。
+    --    现在把「第 N/M 页」和章内比例都算进去，并把剩余时间估出来。
+    --    心跳文本格式见 fanqie/content.lua 的 heartbeat："尝试/总数[/失败数]"。
+    local function on_page_heartbeat(text)
+        local done_s, total_s, failed_s = tostring(text):match("^(%d+)/(%d+)/?(%d*)$")
+        local pages_done, pages_total = tonumber(done_s), tonumber(total_s)
+        if not (pages_done and pages_total and pages_total > 0) then return end
+        -- 节流：墨水屏每次重绘都是一次可见的刷新，而心跳是按「每张图」来的
+        -- （一章几十张）。0.7s 内的连续心跳合并成一次；最后一页永远放行。
+        local now = now_ms()
+        local last = state.last_heartbeat_ui_at
+        if last and pages_done < pages_total and (now - last) < 700 then return end
+        state.last_heartbeat_ui_at = now
+
+        local failed_pages = tonumber(failed_s) or 0
+        state.pages_done, state.pages_total, state.pages_failed = pages_done, pages_total, failed_pages
+
+        local msg = T(_("第 %1/%2 页"), pages_done, pages_total)
+        if failed_pages > 0 then
+            msg = msg .. T(_("（失败 %1 页）"), failed_pages)
+        end
+        -- 本章剩余时间：按本章已下页数的平均耗时外推（只对图片阶段有意义）
+        local started = state.chapter_started_at
+        if started and pages_done > 0 and pages_total > pages_done then
+            local per_page_ms = (now_ms() - started) / pages_done
+            msg = msg .. "  " .. T(_("约剩 %1"),
+                formatEta(per_page_ms * (pages_total - pages_done) / 1000))
+        end
+
+        -- 章内比例计入总进度：不然一本 5 章的图集要等第一章整章下完，进度条才动一格
+        local frac = state.downloaded + math.min(pages_done / pages_total, 1)
+        updateProgress("images", state.current_title, msg, frac / state.total)
     end
 
     -- `finished` 防重入：取消路径（requestDownloadCancel 的 handler）会在当前章
@@ -215,7 +287,12 @@ function Download.execute(parent, book, chapters, start_idx, end_idx)
         else
             local msg = T(_("下载完成!\n《%1》共 %2/%3 章"), book.title or book.book_id, state.downloaded, state.total)
             if state.skipped > 0 then msg = msg .. T(_(" (跳过已缓存 %1 章)"), state.skipped) end
-            if state.failed > 0 then msg = msg .. T(_(" (失败 %1 章)"), state.failed) end
+            if state.failed > 0 then
+                msg = msg .. T(_(" (失败 %1 章)"), state.failed)
+                if state.last_error and state.last_error ~= "" then
+                    msg = msg .. "\n" .. T(_("原因：%1"), brief_error(state.last_error))
+                end
+            end
             self_ref:showInfo(msg)
         end
     end
@@ -280,6 +357,11 @@ function Download.execute(parent, book, chapters, start_idx, end_idx)
 
         -- 频次预检已移除：官方 App 协议为唯一书源，无用户级限流配置
 
+        -- 章内进度基准：心跳回调（on_page_heartbeat）要拿它显示「第 N/M 页」和剩余时间
+        state.current_title = chapter_title
+        state.chapter_started_at = now_ms()
+        state.pages_done, state.pages_total, state.pages_failed = 0, 0, 0
+
         updateProgress("content", chapter_title)
 
         -- 子进程内下载章节（HTTP + 文件 IO），UI 线程不阻塞
@@ -304,6 +386,9 @@ function Download.execute(parent, book, chapters, start_idx, end_idx)
         local function on_done(ok, result, err)
             if not ok or type(result) ~= "table" or not result.path then
                 state.failed = state.failed + 1
+                -- 记下原因：完成提示要直接显示它（见 finish）
+                state.last_error = tostring(err or result)
+                state.last_error_chapter = chapter_title
                 if ok_Log and Log then
                     Log.warn("[FanQie] chapter download failed:", chapter_title, tostring(err or result))
                 end
@@ -316,6 +401,9 @@ function Download.execute(parent, book, chapters, start_idx, end_idx)
                 end
             end
 
+            -- 本章结束：清掉章内进度，回到「章节 X/Y」口径（否则进度框继续显示上一章的页数）
+            state.pages_done, state.pages_total, state.pages_failed = 0, 0, 0
+            state.chapter_started_at = nil
             updateProgress("content", chapter_title)
 
             if dialog:isCanceled() then
@@ -329,9 +417,16 @@ function Download.execute(parent, book, chapters, start_idx, end_idx)
         end
 
         if ok_Async and Async and Async.run then
+            -- 停滞上限：图集/漫画给 180s、文字章给 90s。
+            -- 🔴 这里掐的是「多久没有任何心跳」，不是总时长（心跳见 fanqie/async.lua）：
+            --    content.lua 现在**每次图片尝试都写心跳**，所以正常下载的间隔只有一次请求
+            --    那么长（socket 超时 15s）；留 90/180s 是给 DNS/连接卡住这类不受
+            --    socket TIMEOUT 约束的阻塞留余量。图集单页 ~570KB，慢网下值得多等。
+            local stall_timeout = is_comic_book(book) and 180 or 90
             -- tag 便于 Async.cancel_tag("download") / 诊断活动子进程数
             current_handle = Async.run(work_fn, on_done,
-                { poll_interval = 0.125, timeout = 90, heartbeat = hb_path, tag = "download" })
+                { poll_interval = 0.125, timeout = stall_timeout, heartbeat = hb_path,
+                  on_heartbeat = on_page_heartbeat, tag = "download" })
         else
             -- 降级：同步执行（极少触发，仅当 Async 模块未加载）
             local ok_sync, res = pcall(work_fn)

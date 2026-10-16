@@ -40,6 +40,20 @@ end
 
 local Content = {}
 
+-- 图片阶段的「整章判失败」闸门（两个阈值都只影响**整体失败**，不影响零星失败）
+--  * IMAGE_ATTEMPT_FAIL_ABORT：连续失败到这个数且**一张都没成功** ⇒ 立刻中断本章。
+--    实测《未知生物大百科》单页约 570 KB、单章 13~49 页，若图片服务器不可达，
+--    每张都要等满 socket 超时（15s）才失败 ⇒ 没有这个闸门，用户要白等 3~12 分钟
+--    才看到「失败」，而原因（服务器不可达）藏在日志里。
+--  * IMAGE_TOTAL_FAIL_MIN：远程图片总数达到这个数、且一张都没下下来 ⇒ 本章判失败。
+--    阈值的存在是为了**保护小说**：正文里偶尔挂一两张图不算失败，照旧出文。
+local IMAGE_ATTEMPT_FAIL_ABORT = 8
+local IMAGE_TOTAL_FAIL_MIN = 5
+-- 图集/漫画**半章以上图片没下下来**也判失败：漫画的正文就是这些整页图，
+-- 缺一半等于这章废了，与其让用户打开后对着一片空白猜，不如明确失败一次。
+-- 只对漫画生效（小说正文里的插图挂了不影响读文），阈值 0.5 可调。
+local IMAGE_FAIL_RATIO_ABORT = 0.5
+
 local b64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 -- 预计算编码查找表：热循环里避免 b64chars:sub() 的每字符字符串分配
@@ -1185,6 +1199,27 @@ function Content.download_remote_images(client, xhtml, used_names, progress, opt
 
     local summary = { total = 0, downloaded = 0, failed = 0, data_uri = 0, total_found = 0 }
 
+    -- 「这一张没拿到」的唯一出口：计数 + **写心跳（失败也写）** + 日志。
+    -- 🔴 失败也必须写心跳：否则图片服务器不可达时子进程全程零心跳，
+    --    父进程把「一直在失败」误读成「停滞」⇒ 停滞超时掐掉整章（2026-10-16 线上现象）。
+    -- 连续失败到 IMAGE_ATTEMPT_FAIL_ABORT 且一张都没成功 ⇒ 直接中断本章：
+    --    此时再等下去也只是把「失败」推迟几分钟，不如马上把原因交给用户。
+    local consecutive_failed = 0
+    local function note_image_fail(url, why)
+        summary.failed = summary.failed + 1
+        consecutive_failed = consecutive_failed + 1
+        if progress then
+            progress(summary.downloaded + summary.failed, summary.total, summary.failed)
+        end
+        if logger then
+            logger.warn("image download failed:", url, why or "")
+        end
+        if summary.downloaded == 0 and consecutive_failed >= IMAGE_ATTEMPT_FAIL_ABORT then
+            error(string.format("图片连续 %d 张下载失败（0 张成功）：图片服务器不可达或图片已损坏",
+                consecutive_failed))
+        end
+    end
+
     xhtml = tostring(xhtml or ""):gsub("<[iI][mM][gG]([^>]*)>", function(attrs)
         summary.total_found = summary.total_found + 1
         -- Find the best source URL
@@ -1222,6 +1257,13 @@ function Content.download_remote_images(client, xhtml, used_names, progress, opt
 
             summary.total = summary.total + 1
 
+            -- 🔴 请求**之前**先写一次心跳：单次请求最坏情况是 DNS/连接卡住
+            --    （DNS 不受 socket 的 TIMEOUT 约束，实测可远超 15s），
+            --    这期间不会有「成功」机会来写心跳 ⇒ 父进程会误判停滞。
+            if progress then
+                progress(summary.downloaded + summary.failed, summary.total, summary.failed)
+            end
+
             -- Match the exact headers that successfully fetch the image from
             -- fqnovelpic.com (verified via curl). Desktop Edge UA + NO Referer
             -- (adding a Referer here triggers the CDN's anti-leech protection).
@@ -1248,8 +1290,7 @@ function Content.download_remote_images(client, xhtml, used_names, progress, opt
             end)
 
             if not ok or not data or #data == 0 then
-                summary.failed = summary.failed + 1
-                if logger then logger.warn("image download failed:", url) end
+                note_image_fail(url)
                 return "<img" .. attrs .. ">"
             end
 
@@ -1264,8 +1305,7 @@ function Content.download_remote_images(client, xhtml, used_names, progress, opt
                     derr = "aes 模块不可用"
                 end
                 if not pt then
-                    summary.failed = summary.failed + 1
-                    if logger then logger.warn("[漫画] 图片解密失败:", url, tostring(derr)) end
+                    note_image_fail(url, "[漫画] 图片解密失败: " .. tostring(derr))
                     return "<img" .. attrs .. ">"
                 end
                 data = pt
@@ -1273,8 +1313,7 @@ function Content.download_remote_images(client, xhtml, used_names, progress, opt
 
             local ext, mt = media_type_for(data)
             if not mt:match("^image/") then
-                summary.failed = summary.failed + 1
-                if logger then logger.warn("remote asset is not an image:", url, mt) end
+                note_image_fail(url, "remote asset is not an image: " .. tostring(mt))
                 return "<img" .. attrs .. ">"
             end
 
@@ -1295,11 +1334,12 @@ function Content.download_remote_images(client, xhtml, used_names, progress, opt
             source_map[clean_source] = local_path
             local_src = local_path
             summary.downloaded = summary.downloaded + 1
+            consecutive_failed = 0
         end
 
         -- Replace src with local path
         if progress then
-            progress(summary.downloaded, summary.total)
+            progress(summary.downloaded + summary.failed, summary.total, summary.failed)
         end
         return "<img" .. image_set_local_src(attrs, local_src) .. ">"
     end)
@@ -1640,9 +1680,19 @@ a.para-comment {
     local heartbeat = nil
     if type(opts.heartbeat_path) == "string" and opts.heartbeat_path ~= "" then
         local hb_path = opts.heartbeat_path
-        heartbeat = function(done, total)
-            pcall(H.write_file, hb_path, string.format("%d/%d",
-                tonumber(done) or 0, tonumber(total) or 0))
+        -- 文本格式 = 「尝试/总数[/失败数]」，机器可读：父进程拿 mtime 续期、
+        -- 拿内容显示「第 N/M 页（失败 K）」（见 fanqie/download.lua 的 on_heartbeat）。
+        -- 🔴 **每次尝试都要写**（成功、失败都写）。只写成功的话，图片服务器一旦
+        --    不可达（每张都等满 socket 超时后失败），子进程就**一次心跳都没有**，
+        --    父进程只看到「子进程还在、毫无进展」⇒ 停滞超时把整章掐掉，
+        --    用户看到「一直 0%，很久之后全部失败」——这正是 2026-10-16 的线上现象。
+        heartbeat = function(done, total, failed)
+            local f = tonumber(failed) or 0
+            local txt = string.format("%d/%d", tonumber(done) or 0, tonumber(total) or 0)
+            if f > 0 then
+                txt = txt .. string.format("/%d", f)
+            end
+            pcall(H.write_file, hb_path, txt)
         end
     end
 
@@ -1657,9 +1707,27 @@ a.para-comment {
         end
         -- 先敲一次心跳：让父进程知道「已经进入图片阶段」，不必干等到第一张落盘
         if heartbeat then heartbeat(0, 0) end
-        local ok_img, inline_xhtml, inline_assets =
+        local ok_img, inline_xhtml, inline_assets, img_summary =
             pcall(Content.download_remote_images, client, xhtml, used_names, heartbeat, img_opts)
         img_elapsed = now_ms() - t_img
+        -- 🔴 图片阶段**整体失败**必须让本章失败，不能静默存一份「全是远程 URL 的 HTML」：
+        --    那样用户看到的是「下载成功」，打开却是裂图/空白（离线更是一片空白），
+        --    而真正的原因（服务器不可达 / 解密失败）只剩日志里有。
+        --    原先这里是 `if ok_img and ... then`，pcall 吞掉异常后照旧落盘 ⇒ 静默坏章节。
+        if not ok_img then
+            error("下载章节图片出错: " .. tostring(inline_xhtml))
+        end
+        local sum = img_summary
+        if sum and sum.total > 0 and sum.failed > 0 then
+            if sum.downloaded == 0 and sum.total >= IMAGE_TOTAL_FAIL_MIN then
+                error(string.format("本章 %d 张图片全部下载失败（图片服务器不可达或图片全部损坏）",
+                    sum.total))
+            elseif comic_meta and comic_meta.comic == true
+                and (sum.failed / sum.total) >= IMAGE_FAIL_RATIO_ABORT then
+                error(string.format("本章 %d/%d 张图片下载失败（超过一半，图片服务器不稳定）",
+                    sum.failed, sum.total))
+            end
+        end
         if ok_img and inline_xhtml then
             xhtml = inline_xhtml
             for _, a in ipairs(inline_assets or {}) do
