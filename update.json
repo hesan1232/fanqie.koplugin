@@ -1,16 +1,16 @@
 {
-  "version": "2.16.5",
-  "name": "番茄小说 2.16.5",
+  "version": "2.16.6",
+  "name": "番茄小说 2.16.6",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.5/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.6/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.5/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.5/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.5/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.5/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.6/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.6/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.6/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.6/fanqie.koplugin.zip"
   ],
-  "size": 388516,
-  "sha256": "24a14231914dbf0a2b2233653bdf97ba1b31772af31e2e3533f652f6ee7926c4",
-  "notes": "**修「展开回复后一片空白，且永远空白」：空回复列表不再被当成「成功、零条回复」**\n\n- **修**：段评回复接口对被风控的请求也会回 **200 + code=0 + 空 `reply_list`**\n  （与「签名不合规回 200 空响应」同族）。改前插件把它当「成功、零条回复」\n  缓存住 ⇒ 点开回复后**空白**，且「已展开缓存」让这个空结果**粘死**——\n  收起再展开也**永远不再发请求**，只能退出章节重来。\n- **改**：两层闸门。客户端层：空列表且服务端 `total>0` → 显式报错；合并层：\n  首页 0 条但评论自己挂着回复数 → 整体回滚页数/游标并弹\n  「回复列表返回为空（可能被风控），请稍后重试」，**下一次点开真的重新拉**。\n- **日志**：该异常场景落 **WARN 级日志**（`fanqie.log` 里搜「回复列表为空」），\n  正常合并路径落 INFO（开 debug 才记）。\n- **提示**：若修复后仍空白，请把 `fanqie.log` 发上来 —— 新日志能直接区分"
+  "size": 390529,
+  "sha256": "22514ea20a2032172cf29710d08e928921041de17c45d2c32aa7a5201bd8ea76",
+  "notes": "**缓存管理新增「清空书架缓存 / 清空书城缓存」，书架长按支持清空单本书缓存**\n\n- **清空书架缓存**：书单三层缓存（显示层内存 / API 短缓存 / shelf_cache.lua）+\n  书架状态快照 + 书架封面（covers/）一次清掉；菜单行实时显示占用大小。\n- **清空书城缓存**：榜单短缓存 + 书城封面（store_covers/）一次清掉。\n- **长按书籍**：兑现「书架操作」早已承诺的快捷菜单（开始阅读 / 章节目录 /\n  清空缓存），此前代码从未接入长按；「清空本书缓存」按钮带缓存章数，\n  无缓存时给明确提示，确认后才删除。"
 }

@@ -261,7 +261,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.5",
+    version = Info and Info.version or "2.16.6",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -2730,6 +2730,30 @@ function FanQiePlugin:_coverCacheDirs()
     return { base .. "/covers", base .. "/store_covers" }
 end
 
+--- 「清空书架缓存」的占用统计：shelf_cache.lua（书单文件）+ covers/（书架封面）。
+-- 榜单/章节缓存在别处算，这里只算「书架身份」的两块。
+function FanQiePlugin:_shelfCacheBytes()
+    local bytes = 0
+    local base = self.settings:get_download_dir()
+    local shelf_file = base .. "/shelf_cache.lua"
+    if lfs and H.file_exists(shelf_file) then
+        bytes = bytes + (tonumber(lfs.attributes(shelf_file, "size")) or 0)
+    end
+    if CoverCache then
+        local st = CoverCache.stats(base .. "/covers")
+        bytes = bytes + (tonumber(st and st.bytes) or 0)
+    end
+    return bytes
+end
+
+--- 「清空书城缓存」的占用统计：store_covers/（书城封面）。
+-- 榜单短缓存在内存里（`_store_rank_cache`），不计字节，但清空时一并删。
+function FanQiePlugin:_storeCacheBytes()
+    if not CoverCache then return 0 end
+    local st = CoverCache.stats(self.settings:get_download_dir() .. "/store_covers")
+    return tonumber(st and st.bytes) or 0
+end
+
 --- 这张封面缓存还能用吗：**存在**且**没过有效期**。
 --- ⚠️ 只判 `file_exists` 的话封面一旦落盘就永不失效（书城活动换图后一直显示旧图，
 ---    而且只增不减）。有效期见 settings 的 `cache.cover_cache_days`（0 = 永久）。
@@ -2779,6 +2803,11 @@ function FanQiePlugin:showBookList(books)
         on_select = function(book)
             self:_cancelCoverLoading()  -- 进入书籍时停止封面预下载，释放带宽给章节预下载
             self:showBookDetail(book)
+        end,
+        -- 长按条目：单本书快捷菜单（开始阅读 / 章节目录 / 清空本书缓存），
+        -- 不打断「点按 = 打开详情」。README「书架操作」早就承诺了这个菜单。
+        on_hold = function(book)
+            self:showShelfHoldMenu(book)
         end,
         on_close = function()
             self:_cancelCoverLoading()
@@ -3428,6 +3457,86 @@ function FanQiePlugin:showBookDetail(book)
         on_shelf = true,
         cache_ok = true,
     })
+end
+
+--- 长按书架条目：单本书快捷菜单（开始阅读 / 章节目录 / 清空本书缓存）。
+-- README「书架操作」从早期版本就承诺了「长按书籍：显示操作菜单（开始阅读、
+-- 章节目录、清空缓存）」，但代码一直没接 `on_hold` —— 本方法补齐该承诺。
+-- 「清空本书缓存」与「书籍详情 → 清空本书缓存」走同一条清理路径
+-- （settings.clear_book_cache），区别在入口更快、且无缓存时给明确提示。
+function FanQiePlugin:showShelfHoldMenu(book)
+    if type(book) ~= "table" or not book.book_id then return end
+    local title = tostring(book.title or book.book_name or _("未知"))
+    local dialog -- 先声明后赋值：下面的闭包要捕获这个 upvalue
+
+    -- 打开别的界面之前必须把本菜单 + 书架菜单都关掉，否则书架叠在阅读界面底下
+    --（与「书籍详情 → 开始阅读」同一套收尾；book_list_menu 也要同步置 nil，
+    --  否则 on_close 再触发一次会拿到已关闭的菜单）
+    local function dismiss_self()
+        H.close_widget(dialog)
+        if _state.active_menu then
+            local menu = _state.active_menu
+            _state.active_menu = nil
+            H.close_widget(menu)
+            if self.book_list_menu == menu then self.book_list_menu = nil end
+        end
+    end
+
+    local cached = Content.load_cache_index(self.settings, book.book_id)
+    local cache_count = 0
+    if type(cached) == "table" then
+        for _ in pairs(cached) do cache_count = cache_count + 1 end
+    end
+
+    local rows = {}
+    rows[#rows + 1] = { {
+        text = _("开始阅读"),
+        callback = function()
+            dismiss_self()
+            self:openBook(book)
+        end,
+    } }
+    rows[#rows + 1] = { {
+        text = _("章节目录"),
+        callback = function()
+            dismiss_self()
+            self:showChapterListing(book)
+        end,
+    } }
+    rows[#rows + 1] = { {
+        text = cache_count > 0
+            and T(_("清空本书缓存（%1 章）"), tostring(cache_count))
+            or _("清空本书缓存"),
+        callback = function()
+            if cache_count <= 0 then
+                self:showInfo(T(_("《%1》没有本地章节缓存"), title))
+                return
+            end
+            UIManager:show(ConfirmBox:new{
+                text = T(_("确定清空《%1》的缓存?\n%2 章节将被删除。"), title, tostring(cache_count)),
+                ok_text = _("清空"),
+                cancel_text = _("取消"),
+                ok_callback = function()
+                    self.settings:clear_book_cache(book.book_id)
+                    self:showInfo(T(_("已清空《%1》的 %2 章缓存"), title, tostring(cache_count)))
+                end,
+            })
+        end,
+    } }
+    rows[#rows + 1] = { {
+        text = _("关闭"),
+        callback = function()
+            H.close_widget(dialog)
+        end,
+    } }
+
+    local ButtonDialog = require("ui/widget/buttondialog")
+    dialog = ButtonDialog:new{
+        title = title,
+        title_align = "center",
+        buttons = rows,
+    }
+    UIManager:show(dialog)
 end
 -- 异步获取目录后打开下载对话框
 function FanQiePlugin:_startBookDownload(book)
@@ -4818,6 +4927,73 @@ function FanQiePlugin:getCacheMenuItems()
                     UIManager:show(InfoMessage:new{
                         text = _("章节缓存已刷新"),
                     })
+                end,
+            })
+        end,
+    })
+    -- 书架缓存 = 书单缓存（shelf_cache.lua 三层 + 快照）+ 书架封面（covers/）。
+    -- 书城缓存 = 榜单短缓存（内存）+ 书城封面（store_covers/）。
+    -- 两者拆开是因为目录本来就分开（covers/ vs store_covers/），用户经常只想清一边。
+    table.insert(items, {
+        text_func = function()
+            local bytes = self:_shelfCacheBytes()
+            return T(_("清空书架缓存（书单 + 封面 · %1）"),
+                CoverCache and CoverCache.human_bytes(bytes) or tostring(bytes))
+        end,
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+            local bytes = self:_shelfCacheBytes()
+            if bytes <= 0 then
+                self:showInfo(_("书架缓存是空的"))
+                return
+            end
+            UIManager:show(ConfirmBox:new{
+                text = T(_("删除书架缓存（书单缓存 + 书架封面，共 %1）？\n书架列表下次打开会重新联网获取，封面会重新下载。"),
+                    CoverCache and CoverCache.human_bytes(bytes) or tostring(bytes)),
+                ok_text = _("清空"),
+                cancel_text = _("取消"),
+                ok_callback = function()
+                    -- 书单三层（显示层内存 / client API 短缓存 / shelf_cache.lua）+ 快照
+                    self:clearShelfCache()
+                    local removed = 0
+                    if CoverCache then
+                        local r = CoverCache.clear(self.settings:get_download_dir() .. "/covers")
+                        removed = r.removed or 0
+                    end
+                    self:showInfo(T(_("书架缓存已清空（含封面 %1 张）"), tostring(removed)))
+                    if touchmenu_instance then touchmenu_instance:updateItems() end
+                end,
+            })
+        end,
+    })
+    table.insert(items, {
+        text_func = function()
+            local bytes = self:_storeCacheBytes()
+            return T(_("清空书城缓存（榜单 + 封面 · %1）"),
+                CoverCache and CoverCache.human_bytes(bytes) or tostring(bytes))
+        end,
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+            local bytes = self:_storeCacheBytes()
+            local has_rank = type(self._store_rank_cache) == "table" and next(self._store_rank_cache) ~= nil
+            if bytes <= 0 and not has_rank then
+                self:showInfo(_("书城缓存是空的"))
+                return
+            end
+            UIManager:show(ConfirmBox:new{
+                text = T(_("删除书城缓存（榜单缓存 + 书城封面，共 %1）？\n榜单下次打开会重新联网获取，封面会重新下载。"),
+                    CoverCache and CoverCache.human_bytes(bytes) or tostring(bytes)),
+                ok_text = _("清空"),
+                cancel_text = _("取消"),
+                ok_callback = function()
+                    self._store_rank_cache = nil
+                    local removed = 0
+                    if CoverCache then
+                        local r = CoverCache.clear(self.settings:get_download_dir() .. "/store_covers")
+                        removed = r.removed or 0
+                    end
+                    self:showInfo(T(_("书城缓存已清空（含封面 %1 张）"), tostring(removed)))
+                    if touchmenu_instance then touchmenu_instance:updateItems() end
                 end,
             })
         end,
