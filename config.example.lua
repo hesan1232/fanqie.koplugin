@@ -2,15 +2,25 @@
 -- Copy this file to config.lua and modify the values below
 
 return {
-    -- Cookie 保底配置（可选）：扫码登录优先，以下字段仅在未扫码时作为 fallback。
+    -- Cookie 保底配置（可选）：
+    --   * 未扫码登录：以下字段**整体**作为登录态。
+    --   * 已扫码登录：只**补齐**扫码拿不到的键，绝不覆盖扫码结果（v2.16.3 起）。
     -- 正常使用无需填写，菜单 → 番茄小说 → 扫码登录即可自动获取并持久化 Cookie。
-    -- 如需手动填写：从浏览器复制 Cookie 字符串填入 cookie_string，
-    -- 或在 cookies 表里填入 ttwid / sessionid 等键值。
+    --
+    -- 🔴 但有一个必须手填的场景：**书城搜索**。
+    --    搜索接口只认风控标识 `s_v_web_id`（只带 sessionid / ttwid 都会回
+    --    「HTTP 200 + 0 字节」），而**扫码登录拿不到它**（登录页 / 二维码接口 /
+    --    首页 / 搜索页都不下发）⇒ 表现就是「书架能看、搜索一直加载失败」。
+    --    解决办法：在浏览器打开 fanqienovel.com 并登录，从开发者工具复制完整
+    --    Cookie（含 s_v_web_id）填到下面的 cookie_string，再从插件菜单点
+    --    「重新加载配置文件」；看到「已补入本地缺失的 Cookie: s_v_web_id」即生效。
     cookie_string = "",
 
     cookies = {
         ["ttwid"] = "",
         ["sessionid"] = "",
+        -- 书城搜索必需（浏览器里 s_v_web_id=verify_… 那一项）
+        ["s_v_web_id"] = "",
     },
 
     -- 书源说明：v2.4.0 起章节正文/段评统一走番茄官方 App 协议，

@@ -261,7 +261,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.2",
+    version = Info and Info.version or "2.16.3",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -2656,8 +2656,17 @@ function FanQiePlugin:loadConfigFile(silent, force, override)
     end)
     
     if not silent then
+        -- 补入缺失 cookie 时如实报出来：书城搜索只认风控标识 s_v_web_id，而扫码登录
+        -- 拿不到它（实测不下发）⇒「把浏览器 Cookie 填进 config.lua」是**唯一**能让
+        -- 搜索恢复的路径，用户必须看得见它到底生效了没有。
+        local sup = self.settings.cookie_supplemented
+        local text = _("config.lua loaded.")
+        if type(sup) == "table" and #sup > 0 then
+            text = T(_("config.lua loaded.\n已补入本地缺失的 Cookie: %1"),
+                table.concat(sup, ", "))
+        end
         UIManager:show(InfoMessage:new{
-            text = _("config.lua loaded."), timeout = 2,
+            text = text, timeout = 2,
         })
     end
 end

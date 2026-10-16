@@ -161,9 +161,16 @@ v2.4.0 起**移除多书源调度**（大灰狼/晴天聚合已下线），章�
 
 扫码登录是首选方式。如无法扫码（如设备无摄像头/网络受限），可手动填写 Cookie 作为 fallback：
 
-- 在 `config.lua` 的 `cookie_string` 填入完整 Cookie 字符串，或在 `cookies` 表里填入 `ttwid` / `sessionid` 等键值
-- **优先级**：扫码 Cookie > `cookie_string` > `cookies` 表。已扫码登录后，手动配置不会覆盖扫码结果
-- 清空扫码 Cookie（退出登录）后，手动配置自动生效
+- 在 `config.lua` 的 `cookie_string` 填入完整 Cookie 字符串（从浏览器开发者工具复制），或在 `cookies` 表里填入 `ttwid` / `sessionid` 等键值
+- **优先级**：扫码 Cookie 优先；手动配置**只补齐本地缺失的键，不覆盖扫码结果**（v2.16.3 起）
+- 清空扫码 Cookie（退出登录）后，手动配置整体生效
+
+> 🔴 **书城搜索必须要有 `s_v_web_id`（v2.16.3）**：搜索接口只认这个**风控标识** cookie ——
+> 实测只带 `s_v_web_id` 就正常返回，只带 `sessionid` / `ttwid` 都是「HTTP 200 + 0 字节」，
+> 而**扫码登录拿不到它**（登录页 / 二维码接口 / 首页 / 搜索页都不下发）。
+> 所以「书架能看、搜索却一直失败」时，请把浏览器 Cookie（含 `s_v_web_id`）填进
+> `config.lua` 的 `cookie_string`，再从菜单点一次**重新加载配置文件**；
+> 加载后会提示「已补入本地缺失的 Cookie: s_v_web_id」，看到这句就说明生效了。
 
 > **说明**：扫码登录在子进程中执行网络请求，UI 不卡顿；二维码显示期间可随时取消。
 
@@ -515,6 +522,33 @@ A: 番茄网页接口把部分文案用私用区码位替换过，插件内置�
 
 
 ## 更新日志
+
+### v2.16.3
+
+**修「书城搜索一直加载失败」的真因：搜索接口要的是风控标识 `s_v_web_id`，而不是登录态 —— 且手动 Cookie 兜底在已登录时形同虚设**
+
+- **修**：**搜索接口只认 `s_v_web_id`**（番茄 web 风控指纹 cookie）。实测二分定位：
+  只带 `s_v_web_id` 一个键 → 11 KB / 10 条正常；只带 `sessionid`（登录态）→ 0 字节；
+  只带 `ttwid` → 0 字节；不带 → 0 字节；**伪造值同样 0 字节**（服务端只认它认可的真值）。
+  这就解释了那个长期矛盾：**书架只认登录态所以正常，搜索认风控标识所以恒失败**。
+- **修**：**手动 Cookie 兜底在「已登录」时完全不生效**（真正的坑）。旧逻辑发现本地已有
+  扫码 cookie 就**整段跳过** `config.cookie_string` ⇒ 用户把浏览器 Cookie 填进 `config.lua`
+  也**一点不生效**，而扫码链路又拿不到 `s_v_web_id`（登录页 / 二维码接口 / 首页 / 搜索页
+  / 书库全部实测不下发）⇒ **根本没有任何兜底手段**。现改为**只补本地缺失的键、绝不覆盖
+  扫码结果**，并在「重新加载配置文件」后如实提示「已补入本地缺失的 Cookie: s_v_web_id」。
+- **修**：**错误分类由二分改三分**（0 字节的三种成因处置相反）：没带 Cookie → 提示登录；
+  带 Cookie 但**缺** `s_v_web_id` → 新增 `kind=risk`，点名 `s_v_web_id` 并给出可执行处置
+  （填 `config.lua` 的 `cookie_string` → 重新加载配置）；两者都齐 → 才如实报限流。
+  归到 `auth` 会让用户去重复扫码，而**扫码本来就拿不到它**，只会白折腾。
+- **更正（v2.16.2 段里那句结论是错的）**：v2.16.2 的说明写着「搜索接口只要请求里带 Cookie 头
+  就给数据，连值换成无效 sessionid 也照样返回」——那是当时探针的**头部组合与插件不同**
+  得出的误判。用**插件自己的头组合**（UA / `Accept-Encoding: identity` / `Connection` /
+  `Referer` 全照抄 `Client:request`）重放后，假 cookie 一律 0 字节。真正起作用的是 `s_v_web_id`。
+- **验证**：`_verify_shelf_sort_search.py` 新增 B2 段 7 项（含 NEGATIVE：旧代码下必然红）；
+  `_verify_client_cookie_flag.py` 28 项（新增三态 message 与 `has_sv_web_id` 事实断言）；
+  `_verify_store.py` 235 项（新增 `kind=risk` 4 项）；`_mutate_sv_web_id.py` 12 个变异体全部被抓。
+- **怎么用**：把浏览器里的完整 Cookie 填进 `config.lua` 的 `cookie_string` →
+  菜单「重新加载配置文件」→ 看到「已补入本地缺失的 Cookie: s_v_web_id」即为生效。
 
 ### v2.16.2
 

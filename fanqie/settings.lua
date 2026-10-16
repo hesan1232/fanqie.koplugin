@@ -225,6 +225,10 @@ function Settings:apply_config(config, options)
         return false, "config must return a table"
     end
     
+    -- 每次重算，避免上一次的结果被当成本次（重复提示）。
+    -- 🔴 必须放在**开头**：下面的 config_hash 短路会直接 return，
+    --    若把重置写在短路之后，短路那次就会残留上一次的补入记录。
+    self.cookie_supplemented = nil
     local apply_preferences = options.apply_preferences ~= false
     local override_existing = options.override_existing or false
     local force = options.force or false
@@ -239,8 +243,15 @@ function Settings:apply_config(config, options)
     end
     
     -- Cookie 优先级：扫码登录写入的 settings.cookies 优先，
-    -- config.cookie_string / config.cookies 仅作保底 fallback。
-    -- 已有扫码 cookie（任意非空值）时跳过，避免 config 覆盖扫码结果。
+    -- config.cookie_string / config.cookies 作**补充**（v2.16.3 起，不再整段跳过）。
+    -- 🔴 为什么必须改成「只补本地缺的键」：
+    --    书城**搜索**接口只认风控标识 `s_v_web_id`（2026-10-16 实测二分：只带 sessionid
+    --    或只带 ttwid 都是 HTTP 200 + 0 字节，**只带 s_v_web_id 一个键**才回 11 KB / 10 条），
+    --    而插件的扫码链路**拿不到它**（登录页 / get_qrcode / 首页 / 搜索页 / 书库
+    --    全部实测不下发 Set-Cookie）。于是用户「书架正常、搜索恒失败」——
+    --    而旧逻辑在「已有扫码 cookie」时**直接跳过 config**，
+    --    ⇒ 用户把浏览器 Cookie 填进 cookie_string 也**一点不生效**，等于没有兜底手段。
+    --    只补**缺失**键、绝不覆盖服务端下发的值（避免旧 sessionid 盖掉新登录的）。
     local existing_cookies = self:get("cookies", {}) or {}
     local has_scanned_cookie = false
     for _, v in pairs(existing_cookies) do
@@ -250,21 +261,44 @@ function Settings:apply_config(config, options)
         end
     end
 
+    local cookies = {}
+    if H.is_str(config.cookie_string) and config.cookie_string ~= "" then
+        cookies = parse_cookie_string(config.cookie_string)
+    elseif H.is_tbl(config.cookies) then
+        cookies = config.cookies
+    end
+    -- 过滤空值：config 模板里 ttwid="" / sessionid="" 这类占位不算有效 cookie
+    for k, v in pairs(cookies) do
+        if not v or v == "" then
+            cookies[k] = nil
+        end
+    end
+
     if not has_scanned_cookie then
-        local cookies = {}
-        if H.is_str(config.cookie_string) and config.cookie_string ~= "" then
-            cookies = parse_cookie_string(config.cookie_string)
-        elseif H.is_tbl(config.cookies) then
-            cookies = config.cookies
-        end
-        -- 过滤空值：config 模板里 ttwid="" / sessionid="" 这类占位不算有效 cookie
-        for k, v in pairs(cookies) do
-            if not v or v == "" then
-                cookies[k] = nil
-            end
-        end
         if next(cookies) ~= nil then
             self:set("cookies", cookies)
+        end
+    else
+        local merged, added = {}, {}
+        for k, v in pairs(existing_cookies) do merged[k] = v end
+        for k, v in pairs(cookies) do
+            local cur = merged[k]
+            if cur == nil or cur == "" then
+                merged[k] = v
+                added[#added + 1] = k
+            end
+        end
+        if #added > 0 then
+            table.sort(added)
+            self:set("cookies", merged)
+            -- 供菜单在「重新加载配置文件」后如实告诉用户补了什么
+            -- （没有这句反馈，用户无法判断兜底到底生效没有）
+            self.cookie_supplemented = added
+            local ok_log, logger_mod = pcall(require, "fanqie.logger")
+            if ok_log and logger_mod and logger_mod.info then
+                logger_mod.info("[FanQie][settings] config 补入本地缺失的 cookie 键: "
+                    .. table.concat(added, ", "))
+            end
         end
     end
     

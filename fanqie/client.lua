@@ -486,12 +486,38 @@ local function web_finish(client, text, code, resp_headers, method, url, had_coo
         return nil, err
     end
     if text == nil or #text == 0 then
-        local msg = string.format("%s %s => HTTP 200 但响应 0 字节（%s）",
-            method, url,
-            had_cookie and "已带 Cookie，多为被限流" or "本次未带 Cookie，该接口可能需要登录")
-        -- 🔴 记一条日志：这两种成因**处置相反**（一个该登录、一个该重试），
+        -- 🔴 「HTTP 200 + 0 字节」有**三个**成因（v2.16.3 补第三条），处置各不相同：
+        --   ① 没带 Cookie                → 引导登录
+        --   ② 带了 Cookie 但缺 s_v_web_id → 补风控标识（config 兜底 / 重新登录）
+        --   ③ 带了 Cookie 且有 s_v_web_id → 多为频率限流，重试即可
+        -- 🔬 实测（2026-10-16，`_probe_search_cookie_minimal.py` 二分）：
+        --    书城**搜索**接口只认风控标识 `s_v_web_id` —— 只带 `sessionid`（登录态）
+        --    或只带 `ttwid` 都是 0 字节，**只带 `s_v_web_id` 一个键**就回 11 KB / 10 条；
+        --    伪造值无效（连格式仿真的假 `verify_…` 也是 0 字节）。
+        --    ⇒ 用户会出现「书架正常、搜索却恒失败」：书架只要登录态，搜索要风控标识。
+        --    而插件的扫码链路拿不到 `s_v_web_id`（登录页 / get_qrcode / 首页 / 搜索页
+        --    / 书库 **都不下发**）⇒ 必须让用户能拿浏览器 Cookie 兜底，且提示要说清是哪一条。
+        --    ⚠️ 只判「有没有 Cookie」是不够的：那样缺 s_v_web_id 的用户会被引导去**重复登录**，
+        --    而重新登录并不能解决（登录链路本来就拿不到它）。
+        local ck = nil
+        if client and client.settings and client.settings.get then
+            local ok_ck, v = pcall(client.settings.get, client.settings, "cookies", {})
+            if ok_ck and type(v) == "table" then ck = v end
+        end
+        local sv = ck and ck["s_v_web_id"] or nil
+        local has_sv = (type(sv) == "string" and sv ~= "") and true or false
+        local why
+        if not had_cookie then
+            why = "本次未带 Cookie，该接口可能需要登录"
+        elseif not has_sv then
+            why = "已带 Cookie，但缺风控标识 s_v_web_id"
+        else
+            why = "已带 Cookie 与 s_v_web_id，多为频率限流"
+        end
+        local msg = string.format("%s %s => HTTP 200 但响应 0 字节（%s）", method, url, why)
+        -- 🔴 记一条日志：这三种成因**处置相反**（该登录 / 该补标识 / 该重试），
         --    而界面上只显示一句提示、事后分不出来。用户报障时靠这条日志定性
-        --    —— 本轮排查卡住就是因为没有它（只能反复猜「到底是限流还是没登录」）。
+        --    —— 排查曾卡住就是因为它（只能反复猜「到底是限流还是没登录」）。
         local ok_log, logger_mod = pcall(require, "fanqie.logger")
         if ok_log and logger_mod and logger_mod.warn then
             logger_mod.warn("[FanQie][client] " .. msg)
@@ -499,6 +525,8 @@ local function web_finish(client, text, code, resp_headers, method, url, had_coo
         return nil, {
             kind = "empty",
             had_cookie = had_cookie and true or false,
+            -- 事实字段，供上层决策（store.lua 的搜索分支据此区分「该登录 / 该补标识 / 该重试」）
+            has_sv_web_id = has_sv,
             message = msg,
             code = code,
         }

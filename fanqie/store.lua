@@ -499,7 +499,9 @@ end
 
 -- ------------------------------------------------------------------ 搜索
 
---- 搜索书籍。⚠️ 该接口**必须带 cookie**（无 cookie 回 0 字节）。
+--- 搜索书籍。🔴 该接口真正要的是**风控标识 `s_v_web_id`**，不是登录态：
+--- 实测（2026-10-16 二分）只带 `s_v_web_id` 就正常，只带 `sessionid` / `ttwid` 都回 0 字节；
+--- 伪造的 `s_v_web_id` 同样 0 字节（服务端只认自己认可的值）。
 ---@param keyword string
 ---@param opts table|nil { page_index=0, page_count=10 }
 ---@return table|nil { books = {…}, total = number }, table|nil err
@@ -511,16 +513,28 @@ function Store.search(client, keyword, opts)
     local url = FanQie.store_search_url(keyword, opts)
     local data, err = client:web_get_json(url, { referer = search_referer(keyword) })
     if not data then
-        -- 🔴 「0 字节」有**两个成因**（v2.16.2 修）：没带 Cookie（该登录）／带了 Cookie 却被限流。
-        --    只看「0 字节」就断言「需要登录」，会把**已经登录**的用户骗去重新登录 ——
-        --    实测确认过这条误判路径：书架能正常加载（说明 token 有效、Cookie 非空），
-        --    而搜索却弹「请先登录番茄账号（书城部分接口需要 Cookie）」。
-        --    ⇒ **只在确认本次请求没带 Cookie 时**才提升为 auth；带了 Cookie 就如实报限流。
-        if err and err.kind == "empty" and err.had_cookie ~= true then
-            return nil, {
-                kind = "auth",
-                message = T(_("搜索接口需要登录番茄账号（无 Cookie 时该接口返回空响应）：%1"), url),
-            }
+        -- 🔴 「0 字节」有**三个成因**（v2.16.2 分清前两个，v2.16.3 补第三个）：
+        --   ① 没带 Cookie                ⇒ 该登录
+        --   ② 带了 Cookie 但缺 s_v_web_id ⇒ 该补风控标识（**重新登录也拿不到它**，见下）
+        --   ③ 带了 Cookie 且有 s_v_web_id ⇒ 多为频率限流，该重试
+        -- 只按「有没有 Cookie」二分是不够的：缺 `s_v_web_id` 的用户（典型是刚扫码登录过的）
+        -- 会被引导去**重复登录**，而扫码链路本来就不下发 `s_v_web_id`
+        -- （登录页 / get_qrcode / 首页 / 搜索页 / 书库全部实测不下发）⇒ 怎么登都没用。
+        -- 所以这里必须把「缺风控标识」单独成一类，并给出真正可行的处置（config 兜底 Cookie）。
+        if err and err.kind == "empty" then
+            if err.had_cookie ~= true then
+                return nil, {
+                    kind = "auth",
+                    message = T(_("搜索接口需要登录番茄账号（无 Cookie 时该接口返回空响应）：%1"), url),
+                }
+            elseif err.has_sv_web_id ~= true then
+                return nil, {
+                    kind = "risk",
+                    message = T(_("搜索接口需要风控标识 s_v_web_id（当前 Cookie 里没有，"
+                        .. "扫码登录也不下发它）：请把浏览器 Cookie 填进 config.lua 的 "
+                        .. "cookie_string，再从插件菜单「重新加载配置文件」。%1"), url),
+                }
+            end
         end
         return nil, err
     end
@@ -862,6 +876,11 @@ function Store.describe_error(err)
         return _("书城接口返回了非 JSON 内容（可能触发了风控，请稍后重试）")
     elseif kind == "auth" then
         return _("请先登录番茄账号（书城部分接口需要 Cookie）")
+    elseif kind == "risk" then
+        -- 🔴 单独一类，**不能**并入 auth：走 auth 会让用户去重复扫码，而扫码登录
+        --    本来就不下发 s_v_web_id（实测），怎么登都没用，只会白折腾。
+        return _("搜索需要风控标识 s_v_web_id：请把浏览器 Cookie 填进 config.lua 的 "
+            .. "cookie_string，再从插件菜单「重新加载配置文件」")
     elseif kind == "transport" then
         return T(_("网络请求失败：%1"), tostring(err.message or ""))
     end

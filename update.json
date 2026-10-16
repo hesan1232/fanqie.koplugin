@@ -1,16 +1,16 @@
 {
-  "version": "2.16.2",
-  "name": "番茄小说 2.16.2",
+  "version": "2.16.3",
+  "name": "番茄小说 2.16.3",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.2/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.3/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.2/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.2/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.2/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.2/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.3/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.3/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.3/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.3/fanqie.koplugin.zip"
   ],
-  "size": 377999,
-  "sha256": "58f5bb6528c997971a25dd650283fa4bc8d546d4ffd6e3abaa9aee8a57178d37",
-  "notes": "**修「明明已登录，书城搜索却提示『请先登录番茄账号（书城部分接口需要 Cookie）』」：0 字节响应不再一律当成没登录**\n\n- **修**：**已登录状态下书城搜索被要求登录**。根因是「HTTP 200 + 0 字节」有**两个**成因，\n  而旧代码只看「0 字节」就断定需要登录：\n  ① 请求**没带 Cookie** → 确实该登录；\n  ② **带了 Cookie 但被限流** → 该重试，**不该**让用户去重新登录。\n  实测确认过这条误判：书架能正常加载（登录态有效、Cookie 非空），搜索却弹「请先登录」。\n  现在客户端会把「**本次请求是否带上 Cookie 头**」作为**事实**随错误一起上报，\n  搜索只在**确认没带 Cookie**时才提示登录；带了 Cookie 的 0 字节如实报\n  「书城接口返回空响应（多为被限流，请稍后重试）」。\n- **修**：**部分接口未登录时回的是 `{\"code\":-1,\"message\":\"请先登录\"}`**（不是 101108），\n  旧代码会把它归成普通业务错误，于是用户看到的是"
+  "size": 382101,
+  "sha256": "e8d74d43bc3ca30a5af2f6ddab2ecc02cdc445e4848250c680e37f122ac674ff",
+  "notes": "**修「书城搜索一直加载失败」的真因：搜索接口要的是风控标识 `s_v_web_id`，而不是登录态 —— 且手动 Cookie 兜底在已登录时形同虚设**\n\n- **修**：**搜索接口只认 `s_v_web_id`**（番茄 web 风控指纹 cookie）。实测二分定位：\n  只带 `s_v_web_id` 一个键 → 11 KB / 10 条正常；只带 `sessionid`（登录态）→ 0 字节；\n  只带 `ttwid` → 0 字节；不带 → 0 字节；**伪造值同样 0 字节**（服务端只认它认可的真值）。\n  这就解释了那个长期矛盾：**书架只认登录态所以正常，搜索认风控标识所以恒失败**。\n- **修**：**手动 Cookie 兜底在「已登录」时完全不生效**（真正的坑）。旧逻辑发现本地已有\n  扫码 cookie 就**整段跳过** `config.cookie_string` ⇒ 用户把浏览器 Cookie 填进 `config.lua`\n  也**一点不生效**，而扫码链路又拿不到 `s_v_web_id`（登录页 / 二维码接口 / 首页 / 搜索页\n  / 书库全部实测不下发）⇒ **根本没有任何兜底手段**。现改为**只补本地缺失的键、绝不覆盖\n  扫码结果**，并在「重新加载配置文件」后如实提示「已补入本地缺失的 Cookie: s_v_web_id」。\n- **修**：**错误分类由二分改三分**（0 字节的三种成因处置相反）：没带 Cookie → 提示登录；"
 }
