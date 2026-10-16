@@ -338,10 +338,18 @@ function CommentView:_append_block(group, block, content_w, indent)
 
     if indent then
         -- 回复块整体左缩进（左垫片 + 内容）
+        -- 🔴 align 必须是 "top"：HorizontalGroup 只认 center/top/bottom
+        --    （见 koreader frontend/ui/widget/horizontalgroup.lua:paintTo ——
+        --    "left"/"right" 落进 else 分支，**只写一行 stderr 什么都不画**，
+        --    而 getSize 不看 align ⇒ 块照常占高度却永远不渲染）。
+        --    v2.16.0~v2.16.11 写成 "left"（VerticalGroup 的词汇），正是用户报的
+        --    「评论能出来、回复只有一大块空白」的全部根因 —— 回复块占了位、
+        --    一个像素都没画。stderr 警告只进 KOReader 自身日志，fanqie.log 看不到，
+        --    设备侧零报错（回归桩当时照画不误 ⇒ 假绿了一路）。
         local HorizontalGroup = require("ui/widget/horizontalgroup")
         local HorizontalSpan = require("ui/widget/horizontalspan")
         group[#group + 1] = HorizontalGroup:new{
-            align = "left",
+            align = "top",
             HorizontalSpan:new{ width = Screen:scaleBySize(18) },
             inner,
         }

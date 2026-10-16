@@ -1,16 +1,16 @@
 {
-  "version": "2.16.11",
-  "name": "番茄小说 2.16.11",
+  "version": "2.16.12",
+  "name": "番茄小说 2.16.12",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.11/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.12/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.11/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.11/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.11/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.11/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.12/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.12/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.12/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.12/fanqie.koplugin.zip"
   ],
-  "size": 399090,
-  "sha256": "d32d25ce43c7887b9e3bebfff85de5c3a4e932832f74e18a7726bdb2639ef1da",
-  "notes": "**评论头行瘦身 + 恢复「展开 N 条回复 / 收起」标记**\n\n- **头行只留「序号. 用户名（头衔）」**：日期、点赞数、回复数太挤\n  （用户报「第一行东西太多」），全部挪到**正文下面的统计行**\n  （灰字小号）：`赞N · 回复N  时间`。\n- **折叠标记恢复**：v2.16.8 删过头行标记后可发现性归零（找不到怎么展开了）——\n  本版随统计行一起恢复：统计行尾直接写 **`［展开 N 条回复］`**，展开后变\n  **`［收起］`**；**点统计行整行**（含标记）即可展开/收起，点头行/正文也照旧。\n- **排查「展开后二级回复空白」**：设备日志证实回复已拉到并合并成功（flat=3）\n  且零报错，嫌疑只剩渲染侧——渲染时若一条回复块都没构建出来，**不再静默空白**：\n  落 WARN 日志（「展开后零回复块」）+ 显示一行灰字说明。请把日志这行发给开发者。\n- TextViewer 回退路径（低内存兜底）同口径处理。"
+  "size": 399969,
+  "sha256": "ecdd7d2d12d8da4597c88894c255e4a1efdb02b532e972756b4545f25bb685ac",
+  "notes": "修「评论能显示、回复只有一大块空白」：回复块缩进包装 HorizontalGroup 误用 VerticalGroup 的 align=\"left\"（HorizontalGroup 只认 center/top/bottom，非法值=零绘制但照占高度）。v2.16.0 起所有回复块从未渲染。改为 top + 回归补绘制语义桩与 8 条断言。"
 }
