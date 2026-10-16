@@ -262,7 +262,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.9",
+    version = Info and Info.version or "2.16.10",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -1993,8 +1993,11 @@ function FanQiePlugin:showCommentImage(index, comment_no, img_no)
     -- 两边各写一份的话，改了一处就会出现「内嵌能显示、点开却说文件不存在」。
     local path = para_image_path(self, comment, comment_no, img_no, im)
 
-    -- v2.16.9 起不再带标题栏：全屏直出，「原尺寸 / 旋转 / 关闭」按钮
-    -- 点一下屏幕即呼出（ImageViewer 自带行为，与标题栏无关）。
+    -- v2.16.9.1：with_title_bar=false 只去了标题栏；不传 fullscreen=true 时
+    -- ImageViewer 仍是**居中圆角 + 四周留边**的浮动对话框（radius=8 + padding，
+    -- 见 imageviewer.lua fullscreen 语义）——那就是用户眼里的「中间那层弹窗」。
+    -- 补 fullscreen=true：覆盖整屏、无圆角，与 KOReader 自身「长按图片查看」
+    -- （readerhighlight）完全同款；「原尺寸 / 旋转 / 关闭」按钮点屏呼出不变。
     local self_ref = self
     local function open_file(p)
         if not ImageViewer then
@@ -2004,6 +2007,7 @@ function FanQiePlugin:showCommentImage(index, comment_no, img_no)
         UIManager:show(ImageViewer:new{
             file = p,
             with_title_bar = false,
+            fullscreen = true,
         })
     end
 
