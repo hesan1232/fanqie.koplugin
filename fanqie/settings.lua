@@ -34,6 +34,12 @@ local defaults = {
         -- 默认 3 天（与 `fanqie/cover_cache.lua` 的 DAYS_DEFAULT 同口径）：
         -- 档位 3 / 7 / 9 / 30 天 / 永久。
         cover_cache_days = 3,
+        -- 段评图片缓存有效期（分钟）：0 = 永不失效。comment_images/ 里的图片
+        -- 只增不减（c_<cid>_<n> 命名），过期图会被「当没有」重新下载（覆盖同名
+        -- 文件），并交给「打开段评时每小时一次的自动清理」删掉。
+        -- 默认 60 分钟（与 `fanqie/cover_cache.lua` 的 COMMENT_TTL_DEFAULT 同口径）：
+        -- 档位 10 / 30 / 60 / 180 分钟 / 永久。
+        comment_image_ttl_minutes = 60,
         download_underlines_and_thoughts = false,
         show_annotations = true,
         max_size_mb = 1024,
@@ -641,6 +647,53 @@ function Settings:set_cover_cache_pruned_at(ts)
     local cache = self:get("cache")
     if type(cache) ~= "table" then cache = {} end
     cache.cover_cache_pruned_at = ts
+    self:set("cache", cache)
+    self:flush()
+end
+
+-- ===== 段评图片缓存有效期（comment_images/ 共用） =====
+-- 0 = 永不失效。默认 60 分钟：段评图片每次打开段评都会按需重下并覆盖，
+-- 长期留着只占空间。上限 7 天是「接近永久」的兜底，档位菜单不会给到。
+-- 🔴 默认值必须与 `fanqie/cover_cache.lua` 的 `COMMENT_TTL_DEFAULT` 一致（改一处要改两处）。
+local COMMENT_IMAGE_TTL_DEFAULT = 60
+local COMMENT_IMAGE_TTL_MAX = 10080
+
+function Settings:get_comment_image_ttl_minutes()
+    local cache = self:get("cache")
+    local n = type(cache) == "table" and tonumber(cache.comment_image_ttl_minutes) or nil
+    if not n then return COMMENT_IMAGE_TTL_DEFAULT end
+    n = math.floor(n)
+    if n < 0 then n = 0 end
+    if n > COMMENT_IMAGE_TTL_MAX then n = COMMENT_IMAGE_TTL_MAX end
+    return n
+end
+
+function Settings:set_comment_image_ttl_minutes(n)
+    n = math.floor(tonumber(n) or COMMENT_IMAGE_TTL_DEFAULT)
+    if n < 0 then n = 0 end
+    if n > COMMENT_IMAGE_TTL_MAX then n = COMMENT_IMAGE_TTL_MAX end
+    local cache = self:get("cache")
+    if type(cache) ~= "table" then cache = {} end
+    cache.comment_image_ttl_minutes = n
+    self:set("cache", cache)
+    self:flush()
+end
+
+--- 上次自动清理段评图片的时间戳（秒，0 = 从未清理过）。把自动清理限制成
+--- 「一小时最多一次」—— 每次开段评都扫一遍目录是小屏设备上白白的 I/O。
+function Settings:get_comment_images_pruned_at()
+    local cache = self:get("cache")
+    local n = type(cache) == "table" and tonumber(cache.comment_images_pruned_at) or nil
+    if not n or n <= 0 then return 0 end
+    return math.floor(n)
+end
+
+function Settings:set_comment_images_pruned_at(ts)
+    ts = math.floor(tonumber(ts) or 0)
+    if ts < 0 then ts = 0 end
+    local cache = self:get("cache")
+    if type(cache) ~= "table" then cache = {} end
+    cache.comment_images_pruned_at = ts
     self:set("cache", cache)
     self:flush()
 end

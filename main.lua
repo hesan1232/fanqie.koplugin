@@ -261,7 +261,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.6",
+    version = Info and Info.version or "2.16.7",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -728,6 +728,12 @@ function FanQiePlugin:showParaReviewDetail(index, opts)
         return
     end
 
+    -- 段评图片每小时最多自动清一次（comment_images/ 只增不减；过期图在
+    -- view_image_entries / showCommentImage 里已被「当没有」处理，这里只回收磁盘）。
+    if CoverCache then
+        pcall(CoverCache.maybe_auto_prune_comment_images, self.settings, { self:_comment_image_dir() })
+    end
+
     local self_ref = self
     local ident = pr.ident
     local review_index = index
@@ -1165,6 +1171,17 @@ local function para_image_failed(plugin, path)
     return (type(fails) == "table" and fails[path] == true) or false
 end
 
+--- 这张段评图缓存还能用吗：**存在之外还要新鲜**。
+--- 段评图（c_<cid>_<n>）落盘后曾永不失效，目录只增不减；有效期见 settings 的
+--- `cache.comment_image_ttl_minutes`（0 = 永久，默认 60 分钟）。过期的图在
+--- 命中前**当没有**处理：预取会重下并覆盖同名文件（mtime 随之刷新）。
+local function comment_image_fresh(plugin, path)
+    if not CoverCache then return true end
+    local s = plugin and plugin.settings
+    if not (s and type(s.get_comment_image_ttl_minutes) == "function") then return true end
+    return CoverCache.is_fresh_minutes(path, s:get_comment_image_ttl_minutes())
+end
+
 -- 渲染块的图片条目：已下载→内嵌；未下载→「加载中」占位；不可显示→显式说明。
 -- 同时返回缺失清单（供后台串行下载），项 { owner=, img_no=, im=, path= }。
 -- 图片条目（视图用）。`allow_tap` 为真时给**可显示的图**挂上点击载荷 ——
@@ -1184,7 +1201,8 @@ local function view_image_entries(plugin, owner, owner_no, allow_tap)
         else
             local tap = allow_tap and { no = owner_no, img = k } or nil
             local path = para_image_path(plugin, owner, owner_no, k, im)
-            if H.file_exists(path) then
+            -- 过期图当没有：落进 missing，预取会重下并覆盖同名文件
+            if H.file_exists(path) and comment_image_fresh(plugin, path) then
                 entries[#entries + 1] = { path = path, w = im.width, h = im.height,
                                           img_no = k, tap = tap }
             else
@@ -1486,7 +1504,9 @@ function FanQiePlugin:_prefetchParaImages(index)
             self_ref._para_view_state._images_prefetching = false
             return
         end
-        if H.file_exists(job.path) then
+        -- 存在**且新鲜**才跳过：过期图进了 missing 清单（view_image_entries 把它
+        -- 「当没有」），这里若只判 file_exists 会永远跳过 ⇒ 占位行卡在「正在加载」。
+        if H.file_exists(job.path) and comment_image_fresh(self_ref, job.path) then
             next_one()
             return
         end
@@ -2074,7 +2094,8 @@ function FanQiePlugin:showCommentImage(index, comment_no, img_no)
         })
     end
 
-    if H.file_exists(path) then
+    -- 缓存命中也要新鲜（过期重下，见 comment_image_fresh 的注释）
+    if H.file_exists(path) and comment_image_fresh(self, path) then
         open_file(path)
         return
     end
@@ -2751,6 +2772,14 @@ end
 function FanQiePlugin:_storeCacheBytes()
     if not CoverCache then return 0 end
     local st = CoverCache.stats(self.settings:get_download_dir() .. "/store_covers")
+    return tonumber(st and st.bytes) or 0
+end
+
+--- 「清空评论缓存」的占用统计：comment_images/（段评图片）。
+-- 段评数据本身在内存里（`_para_pages`，换书/换章即失效），落盘的只有图片。
+function FanQiePlugin:_commentCacheBytes()
+    if not CoverCache then return 0 end
+    local st = CoverCache.stats(self:_comment_image_dir())
     return tonumber(st and st.bytes) or 0
 end
 
@@ -4996,6 +5025,73 @@ function FanQiePlugin:getCacheMenuItems()
                     if touchmenu_instance then touchmenu_instance:updateItems() end
                 end,
             })
+        end,
+    })
+    -- 评论缓存 = 段评图片（comment_images/）。段评数据在内存里（换书/换章失效），
+    -- 落盘的只有图片；有效期档位也放在这条旁边，用户不用去设置里翻。
+    table.insert(items, {
+        text_func = function()
+            local files, bytes = 0, 0
+            if CoverCache then
+                local st = CoverCache.stats(self:_comment_image_dir())
+                files = st.files or 0
+                bytes = st.bytes or 0
+            end
+            return T(_("清空评论缓存（段评图片 · %1 张 · %2）"), tostring(files),
+                CoverCache and CoverCache.human_bytes(bytes) or tostring(bytes))
+        end,
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+            local files, bytes = 0, 0
+            if CoverCache then
+                local st = CoverCache.stats(self:_comment_image_dir())
+                files = st.files or 0
+                bytes = st.bytes or 0
+            end
+            if files <= 0 then
+                self:showInfo(_("评论缓存是空的"))
+                return
+            end
+            UIManager:show(ConfirmBox:new{
+                text = T(_("删除全部段评图片缓存？共 %1 张（%2）。\n下次打开段评时会按需重新下载。"),
+                    tostring(files), CoverCache and CoverCache.human_bytes(bytes) or tostring(bytes)),
+                ok_text = _("清空"),
+                cancel_text = _("取消"),
+                ok_callback = function()
+                    -- 段评图片落盘 + 段评页缓存（内存）一起清
+                    local removed = 0
+                    if CoverCache then
+                        local r = CoverCache.clear(self:_comment_image_dir())
+                        removed = r.removed or 0
+                    end
+                    self._para_pages = nil
+                    self:showInfo(T(_("评论缓存已清空（%1 张）"), tostring(removed)))
+                    if touchmenu_instance then touchmenu_instance:updateItems() end
+                end,
+            })
+        end,
+    })
+    table.insert(items, {
+        text = _("评论图片有效期"),
+        keep_menu_open = true,
+        sub_item_table_func = function()
+            local out = {}
+            for _i, mins in ipairs(CoverCache and CoverCache.COMMENT_TTL_PRESETS or { 10, 30, 60, 180, 0 }) do
+                out[#out + 1] = {
+                    text = CoverCache and CoverCache.minutes_label(mins) or tostring(mins),
+                    checked_func = function()
+                        return self.settings.get_comment_image_ttl_minutes
+                            and self.settings:get_comment_image_ttl_minutes() == mins
+                    end,
+                    keep_menu_open = true,
+                    callback = function()
+                        self.settings:set_comment_image_ttl_minutes(mins)
+                        self:showInfo(T(_("评论图片有效期已设为 %1"),
+                            CoverCache and CoverCache.minutes_label(mins) or tostring(mins)))
+                    end,
+                }
+            end
+            return out
         end,
     })
     table.insert(items, {

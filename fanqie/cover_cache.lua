@@ -20,6 +20,10 @@
 `days = 0` 表示**永不失效**：这一档下 `is_fresh` 恒真、`prune` 什么都不删
 （有些用户就是不想让封面翻来覆去地重下）。
 
+段评图片（`comment_images/`）也走本模块，但单位是**分钟**（见
+`COMMENT_TTL_*` / `is_fresh_minutes` / `prune_minutes`）—— 每次打开段评都会
+按需重下，这个量级只增不减得更快。
+
 @module fanqie.cover_cache
 --]]
 
@@ -44,6 +48,14 @@ CoverCache.DAY = 86400
 ---    留着只会占本地空间（用户就是这么提的）。
 CoverCache.DAYS_PRESETS = { 3, 7, 9, 30, 0 }
 CoverCache.DAYS_DEFAULT = 3
+
+-- ===== 段评图片（comment_images/）的分钟级有效期 =====
+-- 🔴 默认值与 `settings.lua` 的 `COMMENT_IMAGE_TTL_DEFAULT` 同口径（改一处要改两处）。
+--    默认 60 分钟（用户提的量级是「十分钟或者一个小时」）：段评图片每次打开
+--    段评都会按需重下并覆盖同名文件，过期图在命中前就被当成「没有」。
+CoverCache.MIN = 60
+CoverCache.COMMENT_TTL_PRESETS = { 10, 30, 60, 180, 0 }
+CoverCache.COMMENT_TTL_DEFAULT = 60
 
 -- 只处理封面会用到的后缀。目录里若混进别的东西（残留的 .part / .tmp / 用户丢的文件），
 -- 一律不碰 —— 清理缓存不是「清空目录」。
@@ -205,6 +217,103 @@ function CoverCache.maybe_auto_prune(settings, dirs, now)
     end
     if type(settings.set_cover_cache_pruned_at) == "function" then
         settings:set_cover_cache_pruned_at(t)
+    end
+    return total
+end
+
+--- 段评图片有效期档位文案：分钟 / 整小时 / 永久（菜单与确认框共用）。
+function CoverCache.minutes_label(minutes)
+    minutes = math.floor(tonumber(minutes) or 0)
+    if minutes <= 0 then return _("永久（不失效）") end
+    if minutes < 60 then return T(_("%1 分钟"), tostring(minutes)) end
+    if minutes % 60 == 0 then return T(_("%1 小时"), tostring(minutes / 60)) end
+    return T(_("%1 分钟"), tostring(minutes))
+end
+
+--- 段评图缓存是否还在有效期内（分钟级；0 = 永不失效）。
+--- 语义与 `is_fresh` 一致：取不到 mtime 时保守返回 true（判不了就别乱失效，
+--- 否则会变成「每次开段评都把所有图重下一遍」）。
+---@param path string
+---@param minutes number 0 = 永不失效
+---@param now number|nil 便于测试注入
+---@return boolean
+function CoverCache.is_fresh_minutes(path, minutes, now)
+    minutes = tonumber(minutes) or 0
+    if minutes <= 0 then return true end
+    local age = CoverCache.age(path, now)
+    if age == nil then return true end
+    return age < minutes * CoverCache.MIN
+end
+
+--- 清理过期段评图（分钟级）。结构与 `prune` 相同，只是时间单位不同；
+--- 同样只删这一层的图片文件、绝不递归（旁边就是章节缓存与书库）。
+---@param dir string 段评图片目录（comment_images）
+---@param minutes number 0 = 永不失效（直接返回，什么都不删）
+---@param now number|nil
+---@return table { removed = n, bytes = 释放字节, kept = 保留数, failed = 删失败数 }
+function CoverCache.prune_minutes(dir, minutes, now)
+    local out = { removed = 0, bytes = 0, kept = 0, failed = 0 }
+    minutes = tonumber(minutes) or 0
+    if minutes <= 0 then return out end
+    if type(dir) ~= "string" or dir == "" then return out end
+    local ok, iter = pcall(lfs.dir, dir)
+    if not ok or not iter then return out end
+
+    local t = tonumber(now) or os.time()
+    local limit = minutes * CoverCache.MIN
+    for name in iter do
+        if name ~= "." and name ~= ".." and IMAGE_SUFFIX[CoverCache.suffix(name)] then
+            local path = dir .. "/" .. name
+            local m = CoverCache.mtime(path)
+            if not m then
+                out.kept = out.kept + 1
+            elseif (t - m) >= limit then
+                local size = H.file_size(path) or 0
+                if H.delete_file(path) then
+                    out.removed = out.removed + 1
+                    out.bytes = out.bytes + size
+                else
+                    out.failed = out.failed + 1
+                end
+            else
+                out.kept = out.kept + 1
+            end
+        end
+    end
+    return out
+end
+
+--- 段评图自动清理：**一小时最多一次**（上次时间戳存 settings）。
+--- 挂在「打开段评弹窗」上；过期图在命中前已被 `is_fresh_minutes` 当成
+--- 「没有」（预取会重下并覆盖），这里只负责回收磁盘。
+---@param settings table Settings 实例
+---@param dirs table 段评图片目录列表
+---@param now number|nil
+---@return table|nil nil = 一小时内已经跑过了
+function CoverCache.maybe_auto_prune_comment_images(settings, dirs, now)
+    if type(settings) ~= "table"
+        or type(settings.get_comment_image_ttl_minutes) ~= "function" then
+        return nil
+    end
+    local t = tonumber(now) or os.time()
+    local last = 0
+    if type(settings.get_comment_images_pruned_at) == "function" then
+        last = tonumber(settings:get_comment_images_pruned_at()) or 0
+    end
+    if last > 0 and (t - last) < 3600 then return nil end
+
+    local minutes = tonumber(settings:get_comment_image_ttl_minutes())
+        or CoverCache.COMMENT_TTL_DEFAULT
+    local total = { removed = 0, bytes = 0, kept = 0, failed = 0 }
+    for _i, dir in ipairs(dirs or {}) do
+        local r = CoverCache.prune_minutes(dir, minutes, t)
+        total.removed = total.removed + r.removed
+        total.bytes = total.bytes + r.bytes
+        total.kept = total.kept + r.kept
+        total.failed = total.failed + r.failed
+    end
+    if type(settings.set_comment_images_pruned_at) == "function" then
+        settings:set_comment_images_pruned_at(t)
     end
     return total
 end

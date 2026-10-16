@@ -1,16 +1,16 @@
 {
-  "version": "2.16.6",
-  "name": "番茄小说 2.16.6",
+  "version": "2.16.7",
+  "name": "番茄小说 2.16.7",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.6/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.7/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.6/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.6/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.6/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.6/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.7/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.7/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.7/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.7/fanqie.koplugin.zip"
   ],
-  "size": 390529,
-  "sha256": "22514ea20a2032172cf29710d08e928921041de17c45d2c32aa7a5201bd8ea76",
-  "notes": "**缓存管理新增「清空书架缓存 / 清空书城缓存」，书架长按支持清空单本书缓存**\n\n- **清空书架缓存**：书单三层缓存（显示层内存 / API 短缓存 / shelf_cache.lua）+\n  书架状态快照 + 书架封面（covers/）一次清掉；菜单行实时显示占用大小。\n- **清空书城缓存**：榜单短缓存 + 书城封面（store_covers/）一次清掉。\n- **长按书籍**：兑现「书架操作」早已承诺的快捷菜单（开始阅读 / 章节目录 /\n  清空缓存），此前代码从未接入长按；「清空本书缓存」按钮带缓存章数，\n  无缓存时给明确提示，确认后才删除。"
+  "size": 393861,
+  "sha256": "181cc3a9d6d26d247b53eca2d1f88f0811b476370ac821281fb26fabc4377b65",
+  "notes": "**段评图片缓存有了有效期（默认 1 小时），缓存管理新增「清空评论缓存」**\n\n- **有效期**：段评图片（`comment_images/`）此前落盘后**永不失效**，只增不减。\n  现在命中缓存前先判新鲜（**分钟级**），过期图「当没有」自动重下覆盖；\n  档位 **10 / 30 / 60 分钟 / 3 小时 / 永久**（缓存管理 → 评论图片有效期，默认 1 小时）。\n- **自动清理**：打开段评时**每小时最多一次**清理过期图片（过期图在命中前已被当成\n  没有，清理只负责回收磁盘）；只删 `comment_images/` 这一层图片文件，绝不递归。\n- **清空评论缓存**：缓存管理新增一条，**段评图片目录 + 内存段评页缓存**一次清掉，\n  菜单行实时显示占用（N 张 · X MB）；空时明确提示「评论缓存是空的」。\n- **修预取死角**：过期图此前会被预取循环的「文件存在就跳过」短路，永远卡在\n  「正在后台加载…」；现在跳过条件为「存在**且新鲜**」。\n- 「永久」档行为与旧版完全一致（不重下、不清理），介意流量的用户可选。"
 }
