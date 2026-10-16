@@ -43,6 +43,10 @@ local function should_log(level)
     return is_debug_enabled()
 end
 
+-- 供调用方做昂贵日志预备工作的门禁（如全文 gsub 预览）：
+-- debug 关闭时跳过字符串构造，避免每章两次全文拷贝。
+Log.is_debug_enabled = is_debug_enabled
+
 -- Rotate log file if it exceeds MAX_LOG_SIZE
 local function rotate_if_needed()
     if not _log_file_path then return end

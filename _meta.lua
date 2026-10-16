@@ -4,9 +4,9 @@ local _ = require("gettext")
 -- _meta.lua 在插件扫描阶段加载，此时 require 路径已可用，
 -- 但为防止异常情况下用硬编码 fallback 保底。
 local ok_info, info = pcall(require, "fanqie.info")
-local version = (ok_info and info and info.version) or "2.2.0"
+local version = (ok_info and info and info.version) or "2.16.0"
 local description = (ok_info and info and info.description)
-    or _("在 KOReader 中阅读番茄小说，支持扫码登录、多书源、段评、两层智能缓存、进度同步，适配墨水屏黑白显示。")
+    or _("在 KOReader 中阅读番茄小说，支持扫码登录、官方 App 协议正文/段评/漫画、在线更新、两层智能缓存、进度同步，适配墨水屏黑白显示。")
 
 return {
     name = "fanqie",

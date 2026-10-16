@@ -13,19 +13,40 @@ local defaults = {
     curl_payload = {},
     books = {},
     downloads = {},
+    -- 记录「用户用插件菜单显式改过哪些 cache 键」（config.lua 不得覆盖，见 apply_config）
+    cache_user_set = {},
     sync = {
         pull_on_open = true,
         upload_on_close = true,
         ask_on_conflict = true,
-        upload_interval_minutes = 0,
+        -- 阅读中定期上传进度的间隔（分钟）：0 = 关闭。
+        -- 默认 3 分钟 —— 以前只在「末页翻章 / 关文档 / 开目录」上传，
+        -- 读到一半退出（关 KOReader / 切书 / 掉电 / 被杀）这段进度就丢了
+        -- （README 承诺的「阅读中定期上传」以前并不存在）。
+        -- 档位见 main.lua 的 PROGRESS_UPLOAD_PRESETS：0 / 1 / 3 / 5 / 10。
+        upload_interval_minutes = 3,
     },
     cache = {
         download_book_images = true,
+        -- 封面缓存有效期（天）：0 = 永不失效。超过这个天数的封面会被**重新下载**，
+        -- 并交给「设置 → 封面缓存 → 立即清理」与「打开书架时每天一次的自动清理」删掉。
+        -- 书城的书封面会随活动/版本换图，长期不失效的话本地会越积越多。
+        -- 默认 3 天（与 `fanqie/cover_cache.lua` 的 DAYS_DEFAULT 同口径）：
+        -- 档位 3 / 7 / 9 / 30 天 / 永久。
+        cover_cache_days = 3,
         download_underlines_and_thoughts = false,
         show_annotations = true,
         max_size_mb = 1024,
         pre_download_chapters = 3,
         pre_download_groups = 2,
+        -- 批量下载（预下载 / 整本下载）节流：相邻两章之间的基础间隔（秒）+
+        -- 随机抖动上限（秒），每 request_batch_size 章再长休 request_batch_rest 秒。
+        -- 取值对齐同一套 App 协议的生产实现（kindle-forge cache.py：1.0~1.8s + 每 20 章 6s）。
+        -- 任意一项 <= 0 = 关闭该项（想一次性灌完可把 request_interval 设 0）。
+        request_interval = 1.0,
+        request_interval_jitter = 0.6,
+        request_batch_size = 20,
+        request_batch_rest = 6.0,
     },
     read_report = {
         enabled = false,
@@ -39,60 +60,29 @@ local defaults = {
         developer_logs = false,
     },
     shelf = {
-        sort_order = "time_desc",
+        -- 书架排序键 / 方向（参考 koobone 的 settings:shelf.sort_order + sort_asc）
+        --   last_read  按最后阅读（服务端 read_timestamp，默认倒序＝最近读的在最前）
+        --   title      按书名
+        --   progress   按阅读进度
+        --   shelf_order 按加入书架（接口原始顺序）
+        sort_order = "last_read",
+        sort_asc = false,
+    },
+    -- 视图显示方式（书架 / 书城各自独立，互不影响）
+    --   list = 列表行（封面 + 书名 + 元信息）
+    --   grid = 封面网格（每页 cols × rows 本，只有封面 + 单行书名）
+    -- 网格**列数与行数都显式**（缺省 3×4）：行数不再由列宽反推 —— 反推的结果
+    -- 随字号/DPI 漂移，用户没法预期也没法调。0 = 按屏高自动（老配置兜底）。
+    ui = {
+        shelf = "list",
+        store = "list",
+        grid_cols = 3,
+        grid_rows = 4,
     },
     -- 段评开关（持久化到用户设置，重启后保持）
     para_review_enabled = false,
     download_dir = "",
     config_loaded = true,
-    -- Legacy qingtian config (kept for migration; new code reads sources.qingtian)
-    qingtian = {
-        server_url = "https://v1.gyks.cf/",
-        username = "",
-        password = "",
-        token = "",
-        device_id = "",
-        auto_login = true,
-        rate_limit = {
-            max_requests = 5,
-            window_seconds = 30,
-        },
-    },
-    -- Book source management (replaces hardcoded qingtian->official fallback)
-    sources = {
-        qingtian = {
-            enabled = true,
-            order = 2,
-            server_url = "https://v1.gyks.cf/",
-            username = "",
-            password = "",
-            token = "",
-            device_id = "",
-            auto_login = true,
-            rate_limit = { max_requests = 5, window_seconds = 30 },
-        },
-        dahuilang = {
-            enabled = true,
-            order = 1,
-            server_url = "https://v2.czyl.cf",
-            username = "",
-            password = "",
-            key = "",
-            token = "",
-            device_id = "",
-            auto_login = true,
-            source = "番茄",
-            tab = "小说",
-            tone_id = "4",
-            rate_limit = { max_requests = 5, window_seconds = 30 },
-        },
-        official = {
-            enabled = true,
-            order = 3,
-            rate_limit = { max_requests = 0, window_seconds = 0 },
-        },
-    },
-    sources_version = 1,
 }
 
 local function deepcopy(value)
@@ -105,75 +95,6 @@ local function deepcopy(value)
     end
     setmetatable(out, getmetatable(value))
     return out
-end
-
--- One-time migration: merge legacy `qingtian` settings into `sources.qingtian`.
--- Only runs when sources_version < 1. Overwrites default empty values with the
--- user's actual legacy config (so real account/password/token are carried over).
-local function migrate_legacy_qingtian(store)
-    local legacy = store:readSetting("qingtian", nil)
-    if legacy and type(legacy) == "table" then
-        local sources = store:readSetting("sources", deepcopy(defaults.sources))
-        local qt = sources.qingtian or {}
-        -- Carry over non-empty legacy values (overwrite default empty strings)
-        for _, key in ipairs({"server_url", "username", "password", "token", "device_id"}) do
-            if legacy[key] ~= nil and legacy[key] ~= "" then
-                qt[key] = legacy[key]
-            end
-        end
-        -- auto_login is a boolean, preserve legacy setting
-        if legacy.auto_login ~= nil then
-            qt.auto_login = legacy.auto_login
-        end
-        if type(legacy.rate_limit) == "table" then
-            qt.rate_limit = qt.rate_limit or {}
-            if legacy.rate_limit.max_requests ~= nil then
-                qt.rate_limit.max_requests = legacy.rate_limit.max_requests
-            end
-            if legacy.rate_limit.window_seconds ~= nil then
-                qt.rate_limit.window_seconds = legacy.rate_limit.window_seconds
-            end
-        end
-        sources.qingtian = qt
-        store:saveSetting("sources", sources)
-    end
-    store:saveSetting("sources_version", 1)
-    store:flush()
-end
-
-local function migrate_legacy_dahuilang(store)
-    local legacy = store:readSetting("dahuilang", nil)
-    if legacy and type(legacy) == "table" then
-        local sources = store:readSetting("sources", deepcopy(defaults.sources))
-        local dl = sources.dahuilang or {}
-        for _, key in ipairs({"server_url", "username", "password", "key", "token", "device_id", "source", "tab", "tone_id"}) do
-            if legacy[key] ~= nil and legacy[key] ~= "" then
-                dl[key] = legacy[key]
-            end
-        end
-        if legacy.auto_login ~= nil then
-            dl.auto_login = legacy.auto_login
-        end
-        if legacy.enabled ~= nil then
-            dl.enabled = legacy.enabled
-        end
-        if legacy.order ~= nil then
-            dl.order = legacy.order
-        end
-        if type(legacy.rate_limit) == "table" then
-            dl.rate_limit = dl.rate_limit or {}
-            if legacy.rate_limit.max_requests ~= nil then
-                dl.rate_limit.max_requests = legacy.rate_limit.max_requests
-            end
-            if legacy.rate_limit.window_seconds ~= nil then
-                dl.rate_limit.window_seconds = legacy.rate_limit.window_seconds
-            end
-        end
-        sources.dahuilang = dl
-        store:saveSetting("sources", sources)
-    end
-    store:saveSetting("sources_version", 2)
-    store:flush()
 end
 
 function Settings:new()
@@ -190,17 +111,6 @@ function Settings:new()
     if not obj.store:has("config_loaded") then
         obj.store:saveSetting("config_loaded", true)
         obj.store:flush()
-    end
-
-    -- Migrate legacy qingtian config into sources.qingtian (once)
-    local sv = obj.store:readSetting("sources_version", 0) or 0
-    if sv < 1 then
-        migrate_legacy_qingtian(obj.store)
-    end
-    -- Migrate legacy dahuilang config into sources.dahuilang (once)
-    sv = obj.store:readSetting("sources_version", 0) or 0
-    if sv < 2 then
-        migrate_legacy_dahuilang(obj.store)
     end
 
     local download_dir = obj.store:readSetting("download_dir", "")
@@ -265,115 +175,6 @@ function Settings:is_cookie_configured()
         end
     end
     return false
-end
-
--- === Book source management ===
--- These accessors read/write `sources.<id>` (the new unified config).
--- Legacy get_qingtian_* APIs are kept for backward compatibility; they
--- now delegate to sources.qingtian.
-
-function Settings:get_sources()
-    return self:get("sources", {})
-end
-
-function Settings:get_source(source_id)
-    local sources = self:get("sources", {})
-    return sources[source_id] or {}
-end
-
-function Settings:set_source(source_id, cfg)
-    local sources = self:get("sources", {})
-    sources[source_id] = cfg
-    self:set("sources", sources)
-    self:flush()
-end
-
-function Settings:set_source_field(source_id, key, value)
-    local sources = self:get("sources", {})
-    local cfg = sources[source_id] or {}
-    cfg[key] = value
-    sources[source_id] = cfg
-    self:set("sources", sources)
-    self:flush()
-end
-
--- Swap a source's order with its neighbor. direction: -1 = up, +1 = down.
-function Settings:move_source(source_id, direction)
-    local sources = self:get("sources", {})
-    local ordered = {}
-    for id, cfg in pairs(sources) do
-        table.insert(ordered, { id = id, order = cfg.order or 999 })
-    end
-    table.sort(ordered, function(a, b) return a.order < b.order end)
-    local idx = nil
-    for i, item in ipairs(ordered) do
-        if item.id == source_id then idx = i break end
-    end
-    if not idx then return false end
-    local target = idx + direction
-    if target < 1 or target > #ordered then return false end
-    local a, b = ordered[idx], ordered[target]
-    local cfg_a = sources[a.id]
-    local cfg_b = sources[b.id]
-    if cfg_a and cfg_b then
-        cfg_a.order, cfg_b.order = cfg_b.order, cfg_a.order
-        sources[a.id] = cfg_a
-        sources[b.id] = cfg_b
-        self:set("sources", sources)
-        self:flush()
-        return true
-    end
-    return false
-end
-
-function Settings:get_qingtian_configured()
-    local qt = self:get_source("qingtian")
-    local server_url = H.trim(qt.server_url or "")
-    local username = H.trim(qt.username or "")
-    local token = H.trim(qt.token or "")
-    return server_url ~= "" and (token ~= "" or username ~= "")
-end
-
-function Settings:get_qingtian_token()
-    local qt = self:get_source("qingtian")
-    return H.trim(qt.token or "")
-end
-
-function Settings:set_qingtian_token(token, device_id)
-    local qt = self:get_source("qingtian")
-    qt.token = token
-    if device_id then
-        qt.device_id = device_id
-    end
-    self:set_source("qingtian", qt)
-end
-
-function Settings:clear_qingtian_token()
-    local qt = self:get_source("qingtian")
-    qt.token = ""
-    qt.device_id = ""
-    self:set_source("qingtian", qt)
-end
-
-function Settings:get_dahuilang_token()
-    local dl = self:get_source("dahuilang")
-    return H.trim(dl.token or "")
-end
-
-function Settings:set_dahuilang_token(token, device_id)
-    local dl = self:get_source("dahuilang")
-    dl.token = token
-    if device_id then
-        dl.device_id = device_id
-    end
-    self:set_source("dahuilang", dl)
-end
-
-function Settings:clear_dahuilang_token()
-    local dl = self:get_source("dahuilang")
-    dl.token = ""
-    dl.device_id = ""
-    self:set_source("dahuilang", dl)
 end
 
 -- Compute a simple hash of the config table for change detection.
@@ -485,13 +286,22 @@ function Settings:apply_config(config, options)
     
     if apply_preferences and H.is_tbl(config.cache) then
         local cache = self:get("cache")
+        local user_set = self:get("cache_user_set")
+        if type(user_set) ~= "table" then user_set = {} end
+        -- 优先级：菜单显式设置 > config.lua > 内置默认。
+        -- 旧实现只在 cache[key] == nil 时填充，于是「首次安装已写入 3」之后，
+        -- 用户再改 config.lua 的 pre_download_chapters 永远不会生效
+        -- —— 这正是「预下载章节数改了没用，一直默认三章」的根因之一。
         if override_existing then
+            -- 显式「重新加载配置文件」：以 config.lua 为准，清掉菜单的显式设置标记
             for key, value in pairs(config.cache) do
                 cache[key] = value
             end
+            user_set = {}
+            self:set("cache_user_set", user_set)
         else
             for key, value in pairs(config.cache) do
-                if cache[key] == nil then
+                if not user_set[key] then
                     cache[key] = value
                 end
             end
@@ -535,76 +345,6 @@ function Settings:apply_config(config, options)
         self:set("shelf", shelf)
     end
     
-    -- New unified sources config (nil-only: don't overwrite user-edited values)
-    if H.is_tbl(config.sources) then
-        local sources = self:get("sources")
-        for source_id, cfg in pairs(config.sources) do
-            local existing = sources[source_id] or {}
-            for key, value in pairs(cfg) do
-                -- Protect token/device_id: config file never overwrites login state
-                if key ~= "token" and key ~= "device_id" then
-                    -- nil-only: only apply if user hasn't set this key yet
-                    if existing[key] == nil or force then
-                        existing[key] = value
-                    end
-                end
-            end
-            sources[source_id] = existing
-        end
-        self:set("sources", sources)
-    end
-
-    -- Legacy qingtian config: merge into sources.qingtian (nil-only)
-    if H.is_tbl(config.qingtian) then
-        local sources = self:get("sources")
-        local qt = sources.qingtian or {}
-        for key, value in pairs(config.qingtian) do
-            if key ~= "token" and key ~= "device_id" then
-                if qt[key] == nil or force then
-                    qt[key] = value
-                end
-            end
-        end
-        if config.qingtian.auto_login ~= nil then
-            if qt.auto_login == nil or force then
-                qt.auto_login = config.qingtian.auto_login
-            end
-        end
-        sources.qingtian = qt
-        self:set("sources", sources)
-    end
-
-    -- Legacy dahuilang config: merge into sources.dahuilang (nil-only)
-    if H.is_tbl(config.dahuilang) then
-        local sources = self:get("sources")
-        local dl = sources.dahuilang or {}
-        for key, value in pairs(config.dahuilang) do
-            -- Protect token/device_id from being overwritten by config file
-            if key ~= "token" and key ~= "device_id" then
-                if dl[key] == nil or force then
-                    dl[key] = value
-                end
-            end
-        end
-        if config.dahuilang.auto_login ~= nil then
-            if dl.auto_login == nil or force then
-                dl.auto_login = config.dahuilang.auto_login
-            end
-        end
-        if config.dahuilang.enabled ~= nil then
-            if dl.enabled == nil or force then
-                dl.enabled = config.dahuilang.enabled
-            end
-        end
-        if config.dahuilang.order ~= nil then
-            if dl.order == nil or force then
-                dl.order = config.dahuilang.order
-            end
-        end
-        sources.dahuilang = dl
-        self:set("sources", sources)
-    end
-
     -- Save config hash so next call can skip if unchanged
     local config_hash = self:compute_config_hash(config)
     self:set("config_hash", config_hash)
@@ -687,6 +427,187 @@ end
 
 function Settings:setParaReviewEnabled(enabled)
     self:set("para_review_enabled", enabled == true)
+    self:flush()
+end
+
+-- ===== 缓存偏好写入（带「用户显式设置」标记）=====
+-- 菜单改动 cache 项时走这里：除写值外记录 cache_user_set，
+-- 使 apply_config 不再用 config.lua 的同名值覆盖它。
+-- 想恢复「以 config.lua 为准」，用「设置 → 重新加载配置文件」。
+function Settings:set_cache_pref(key, value)
+    if type(key) ~= "string" or key == "" then return end
+    local cache = self:get("cache")
+    cache[key] = value
+    self:set("cache", cache)
+    local user_set = self:get("cache_user_set")
+    if type(user_set) ~= "table" then user_set = {} end
+    user_set[key] = true
+    self:set("cache_user_set", user_set)
+    self:flush()
+end
+
+-- ===== 书架排序持久化（参考 koobone）=====
+-- 键不合法时回落 last_read，避免手改 settings 文件写坏排序导致书架顺序随机。
+local SHELF_SORT_KEYS = {
+    last_read = true, title = true, progress = true, shelf_order = true,
+}
+
+function Settings:get_shelf_sort()
+    local shelf = self:get("shelf")
+    local key = type(shelf) == "table" and shelf.sort_order or nil
+    if not SHELF_SORT_KEYS[key] then
+        -- 兼容旧值 time_desc（v2.5.0 之前的死字段）→ 按最后阅读
+        return "last_read"
+    end
+    return key
+end
+
+-- 设置排序键时一并清掉方向：换键由调用方决定默认方向（与 koobone 一致）
+function Settings:set_shelf_sort(key)
+    if not SHELF_SORT_KEYS[key] then return end
+    local shelf = self:get("shelf")
+    if type(shelf) ~= "table" then shelf = {} end
+    shelf.sort_order = key
+    shelf.sort_asc = nil
+    self:set("shelf", shelf)
+end
+
+-- 返回 nil 表示「未显式设置方向」→ 由调用方按各键默认方向决定
+function Settings:get_shelf_sort_asc()
+    local shelf = self:get("shelf")
+    if type(shelf) ~= "table" then return nil end
+    if type(shelf.sort_asc) == "boolean" then return shelf.sort_asc end
+    return nil
+end
+
+function Settings:set_shelf_sort_asc(asc)
+    local shelf = self:get("shelf")
+    if type(shelf) ~= "table" then shelf = {} end
+    shelf.sort_asc = asc == true
+    self:set("shelf", shelf)
+end
+
+-- ===== 视图显示方式（列表 / 封面网格）=====
+-- kind = "shelf" | "store"。两个视图各自记一份，改书城不会顺带把书架也变成网格。
+-- 值不合法（手改 settings 写坏 / 旧版本没有这个键）一律回落 "list"，
+-- 避免把一个认不出来的字符串一路带到 updateItems 里做出空页。
+local UI_VIEW_KINDS = { shelf = true, store = true }
+local UI_VIEW_MODES = { list = true, grid = true }
+-- ⚠️ 这三组边界必须与 fanqie/cover_cell.lua 的 GRID_COLS_*/GRID_ROWS_* **同口径**：
+-- 菜单档位、这里夹紧的边界、cover_cell.metrics 的兜底是**三处独立夹紧**，任何一处
+-- 漂移都会出现「菜单里能选、布局里被悄悄改掉」这种最难查的静默错位。
+local GRID_COLS_MIN, GRID_COLS_MAX, GRID_COLS_DEFAULT = 2, 8, 3
+local GRID_ROWS_MIN, GRID_ROWS_MAX, GRID_ROWS_DEFAULT = 1, 8, 4
+
+function Settings:get_ui_view(kind)
+    if not UI_VIEW_KINDS[kind] then return "list" end
+    local ui = self:get("ui")
+    local mode = type(ui) == "table" and ui[kind] or nil
+    if not UI_VIEW_MODES[mode] then return "list" end
+    return mode
+end
+
+function Settings:set_ui_view(kind, mode)
+    if not UI_VIEW_KINDS[kind] or not UI_VIEW_MODES[mode] then return end
+    local ui = self:get("ui")
+    if type(ui) ~= "table" then ui = {} end
+    ui[kind] = mode
+    self:set("ui", ui)
+    self:flush()
+end
+
+function Settings:get_ui_grid_cols()
+    local ui = self:get("ui")
+    local n = type(ui) == "table" and tonumber(ui.grid_cols) or nil
+    if not n then return GRID_COLS_DEFAULT end
+    n = math.floor(n)
+    if n < GRID_COLS_MIN then n = GRID_COLS_MIN end
+    if n > GRID_COLS_MAX then n = GRID_COLS_MAX end
+    return n
+end
+
+function Settings:set_ui_grid_cols(n)
+    n = math.floor(tonumber(n) or GRID_COLS_DEFAULT)
+    if n < GRID_COLS_MIN then n = GRID_COLS_MIN end
+    if n > GRID_COLS_MAX then n = GRID_COLS_MAX end
+    local ui = self:get("ui")
+    if type(ui) ~= "table" then ui = {} end
+    ui.grid_cols = n
+    self:set("ui", ui)
+    self:flush()
+end
+
+--- 网格行数。0 = 按屏高自动反推（老配置 / 没设置过时用默认档位）。
+function Settings:get_ui_grid_rows()
+    local ui = self:get("ui")
+    local n = type(ui) == "table" and tonumber(ui.grid_rows) or nil
+    if not n then return GRID_ROWS_DEFAULT end
+    n = math.floor(n)
+    if n <= 0 then return 0 end
+    if n < GRID_ROWS_MIN then n = GRID_ROWS_MIN end
+    if n > GRID_ROWS_MAX then n = GRID_ROWS_MAX end
+    return n
+end
+
+function Settings:set_ui_grid_rows(n)
+    n = math.floor(tonumber(n) or GRID_ROWS_DEFAULT)
+    if n <= 0 then
+        n = 0
+    elseif n < GRID_ROWS_MIN then
+        n = GRID_ROWS_MIN
+    elseif n > GRID_ROWS_MAX then
+        n = GRID_ROWS_MAX
+    end
+    local ui = self:get("ui")
+    if type(ui) ~= "table" then ui = {} end
+    ui.grid_rows = n
+    self:set("ui", ui)
+    self:flush()
+end
+
+-- ===== 封面缓存有效期（书城 store_covers/ 与书架 covers/ 共用这一个设置）=====
+-- 0 = 永不失效；上限 10 年在语义上等于「永不失效」，但避免了把 0 当哨兵之外的怪值。
+-- 🔴 默认值必须与 `fanqie/cover_cache.lua` 的 `DAYS_DEFAULT` 一致（改一处要改两处）。
+local COVER_CACHE_DAYS_DEFAULT = 3
+local COVER_CACHE_DAYS_MAX = 3650
+
+function Settings:get_cover_cache_days()
+    local cache = self:get("cache")
+    local n = type(cache) == "table" and tonumber(cache.cover_cache_days) or nil
+    if not n then return COVER_CACHE_DAYS_DEFAULT end
+    n = math.floor(n)
+    if n < 0 then n = 0 end
+    if n > COVER_CACHE_DAYS_MAX then n = COVER_CACHE_DAYS_MAX end
+    return n
+end
+
+function Settings:set_cover_cache_days(n)
+    n = math.floor(tonumber(n) or COVER_CACHE_DAYS_DEFAULT)
+    if n < 0 then n = 0 end
+    if n > COVER_CACHE_DAYS_MAX then n = COVER_CACHE_DAYS_MAX end
+    local cache = self:get("cache")
+    if type(cache) ~= "table" then cache = {} end
+    cache.cover_cache_days = n
+    self:set("cache", cache)
+    self:flush()
+end
+
+--- 上次自动清理封面缓存的时间戳（秒，0 = 从未清理过）。用来把自动清理限制成
+--- 「一天最多一次」—— 每次开书架都扫一遍目录在小屏设备上是白白的 I/O。
+function Settings:get_cover_cache_pruned_at()
+    local cache = self:get("cache")
+    local n = type(cache) == "table" and tonumber(cache.cover_cache_pruned_at) or nil
+    if not n or n <= 0 then return 0 end
+    return math.floor(n)
+end
+
+function Settings:set_cover_cache_pruned_at(ts)
+    ts = math.floor(tonumber(ts) or 0)
+    if ts < 0 then ts = 0 end
+    local cache = self:get("cache")
+    if type(cache) ~= "table" then cache = {} end
+    cache.cover_cache_pruned_at = ts
+    self:set("cache", cache)
     self:flush()
 end
 

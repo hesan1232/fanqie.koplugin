@@ -4,6 +4,12 @@ config.lua
 # Architecture design doc - internal reference, not distributed
 ARCHITECTURE.md
 
+# 开发期评审文档 - 内部参考，与 ARCHITECTURE.md 同等待遇，不进公开仓库
+fanqie.koplugin-*.md
+
+# API 接口文档 - 内含**真实 Cookie / sessionid**（登录态），本地参考用，绝不入库
+API-接口文档.md
+
 # KOReader / Lua runtime artifacts
 *.luac
 /.cache/

@@ -25,9 +25,29 @@ end
 
 local H = require("fanqie.helper")
 
+-- 漫画页图是 AES-256-GCM 密文（详见文件末尾「漫画章节」一节）；
+-- aes.lua 依赖 LuaJIT 的 bit 库，加载失败时漫画图只能保留加密体，故用 pcall。
+local ok_aes, Aes = pcall(require, "fanqie.reading.aes")
+if not ok_aes then
+    -- 静默降级会让每张漫画图都走「解密失败」分支，症状与「网络下载失败」
+    -- 一模一样（真踩过：harness 里少了 package.path，7 张图全灭却看不出来）。
+    if logger then
+        logger.warn(LOG_MODULE, "[漫画] aes 模块加载失败，漫画页图将无法解密:",
+            tostring(Aes))
+    end
+    Aes = nil
+end
+
 local Content = {}
 
 local b64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+-- 预计算编码查找表：热循环里避免 b64chars:sub() 的每字符字符串分配
+-- （大图片 base64 有十万级迭代，纯 Lua 下查表比 sub 快数倍）
+local b64enc = {}
+for i = 1, 64 do
+    b64enc[i] = b64chars:sub(i, i)
+end
 
 -- 创建 base64 解码查找表
 local b64decode = {}
@@ -43,19 +63,20 @@ local function base64_encode(data)
     out[out_len] = ""
     local idx = 1
     for i = 1, len, 3 do
-        local a = data:byte(i)
-        local b = i + 1 <= len and data:byte(i + 1) or 0
-        local c = i + 2 <= len and data:byte(i + 2) or 0
+        -- byte(i, i+2) 一次取 3 字节，越界返回 nil
+        local a, b, c = data:byte(i, i + 2)
+        b = b or 0
+        c = c or 0
         local n = a * 65536 + b * 256 + c
-        out[idx] = b64chars:sub(rshift(n, 18) % 64 + 1, rshift(n, 18) % 64 + 1)
-        out[idx + 1] = b64chars:sub(rshift(n, 12) % 64 + 1, rshift(n, 12) % 64 + 1)
+        out[idx] = b64enc[rshift(n, 18) % 64 + 1]
+        out[idx + 1] = b64enc[rshift(n, 12) % 64 + 1]
         if i + 1 <= len then
-            out[idx + 2] = b64chars:sub(rshift(n, 6) % 64 + 1, rshift(n, 6) % 64 + 1)
+            out[idx + 2] = b64enc[rshift(n, 6) % 64 + 1]
         else
             out[idx + 2] = "="
         end
         if i + 2 <= len then
-            out[idx + 3] = b64chars:sub(n % 64 + 1, n % 64 + 1)
+            out[idx + 3] = b64enc[n % 64 + 1]
         else
             out[idx + 3] = "="
         end
@@ -1002,6 +1023,79 @@ function Content.readable_chapters(chapters)
 end
 
 -- Helper functions for image handling
+-- ---------------------------------------------------------------------------
+-- 漫画章节（番茄 book_type=1）
+-- ---------------------------------------------------------------------------
+-- 漫画章节的正文**不是 HTML**。服务端把 content 解密后给的是一段 JSON：
+--   {"itemId":7097103730667061767,
+--    "picInfos":[{"picUrl":"https://…","width":1063,"height":1000,"md5":"…"}, …],
+--    "encrypt":"…","encrypt_key":"…","lowPicInfos":[…]}
+-- 每张图就是一页。
+--
+-- ⚠️ **不能用 text_type 判别**：实测小说和漫画的 text_type 都是 2
+--    （小说「第 1 章 得加钱」text_type=2 / paragraphs_num=105；
+--      漫画「我是九月」text_type=2 / paragraphs_num=0）。
+--    真正稳的差别在**内容形态**：漫画是 `{…"picInfos"…}`，
+--    小说是 `<header></header><article><h1 class="chapterTitle1">…`。
+--    所以这里用内容嗅探，不依赖任何回包字段。
+--
+-- 渲染产物刻意与小说插图**同构**（就是一串 <img>），这样后面的
+-- download_remote_images / save_chapter_html 可以原样复用，不必分叉；
+-- 章节 CSS 里已有的 `img{display:block;margin:0 auto;max-width:100%;height:auto}`
+-- 正好就是漫画要的排版，无需追加样式。
+--
+-- 解析用纯 Lua 模式匹配（不引 JSON 库）：结构由服务端生成、字段固定，
+-- 且 %b[] / %b{} 是平衡匹配，能把 picInfos 数组和 lowPicInfos 干净切开。
+
+--- 从漫画 JSON 中抽出图片清单；不是漫画则返回 nil。
+---@param raw string 解密后的章节内容
+---@return table|nil pics { {url=, width=, height=, md5=}, … }
+function Content.parse_comic_pics(raw)
+    if type(raw) ~= "string" or #raw < 16 then return nil end
+    local s = raw:match("^%s*(.-)%s*$") or ""
+    -- 快速否定：小说正文以 '<' 开头，且不含 picInfos（O(1)，不影响小说链路开销）
+    if s:sub(1, 1) ~= "{" or not s:find('"picInfos"', 1, true) then
+        return nil
+    end
+    -- 平衡括号取值：%b[] 不会把后面 lowPicInfos 的数组一起吞进来
+    local arr = s:match('"picInfos"%s*:%s*(%b[])')
+    if not arr then return nil end
+    local pics = {}
+    for obj in arr:gmatch("(%b{})") do
+        local url = obj:match('"picUrl"%s*:%s*"([^"]+)"')
+        if url then
+            pics[#pics + 1] = {
+                url = url,
+                width = tonumber(obj:match('"width"%s*:%s*(%d+)')) or 0,
+                height = tonumber(obj:match('"height"%s*:%s*(%d+)')) or 0,
+                md5 = obj:match('"md5"%s*:%s*"([^"]*)"'),
+            }
+        end
+    end
+    if #pics == 0 then return nil end
+    -- 加密参数：encrypt=true 表示图片是密文，encrypt_key 是 32 字节 hex
+    -- （实测 AES-256-GCM，见 Aes.gcm_decrypt）
+    local encrypt = s:match('"encrypt"%s*:%s*true') ~= nil
+    local key_hex = s:match('"encrypt_key"%s*:%s*"([^"]*)"')
+    return pics, encrypt, key_hex
+end
+
+--- 漫画图片清单 → XHTML 片段（每页一个 <img>）。
+---@param pics table parse_comic_pics 的产物
+---@return string xhtml
+function Content.render_comic_pics(pics)
+    local out = {}
+    for i, p in ipairs(pics or {}) do
+        -- 结构与小说插图一致：src 在前、其余属性以空格分隔。
+        -- （download_remote_images 依赖「属性前至少一个空白」来区分 src 与 data-src。）
+        out[#out + 1] = string.format(
+            '<div class="comic-page" p_idx="%d">'
+            .. '<img src="%s" img-width="%d" img-height="%d" alt="" /></div>',
+            i, xml_escape(p.url), tonumber(p.width) or 0, tonumber(p.height) or 0)
+    end
+    return table.concat(out, "\n")
+end
+
 local function image_trim(value)
     -- Also decode common HTML entities right at extraction time (matches miuread)
     local s = tostring(value or ""):match("^%s*(.-)%s*$") or ""
@@ -1037,10 +1131,22 @@ local function image_attr(attrs, name_pattern)
 end
 
 local function image_remove_attr(attrs, name_pattern)
-    -- Remove quoted attribute: name="value" or name='value'
-    local result = attrs:gsub("%s*" .. name_pattern .. "%s*=%s*[\"'][^\"']*[\"']", "")
-    -- Remove unquoted attribute: name=value
-    result = result:gsub("%s*" .. name_pattern .. "%s*=%s*[^%s>]+", "")
+    -- 前导空白必须至少 1 个字符：attrs 来自 `<img([^>]*)>`
+    -- 的捕获组，永远以空格开头。用 `%s*` 会：
+    --   ① 把前导空格一起吃掉 → 删完相邻属性黏连
+    --      （src="images/a.jpg"img-width="1400"）；
+    --   ② 允许在 data-src= 内部匹配 src= → 删完留下裸 "data-"。
+    local result = attrs:gsub("%s+" .. name_pattern .. "%s*=%s*[\"'][^\"']*[\"']", "")
+    result = result:gsub("%s+" .. name_pattern .. "%s*=%s*[^%s>]+", "")
+    -- 兜底：属性就落在字符串开头（无前导空格）
+    result = result:gsub("^" .. name_pattern .. "%s*=%s*[\"'][^\"']*[\"']", "")
+    result = result:gsub("^" .. name_pattern .. "%s*=%s*[^%s>]+", "")
+    -- 归一为不变式：非空则必以**单个空格**开头。
+    -- 删首个属性时 `%s+` 会连那个空格一起吃掉，
+    -- 剩下的属性会直接贴到 src="..." 后面
+    -- （src="images/a.jpg"img-width="1400"）。
+    result = result:gsub("^%s+", "")
+    if result ~= "" then result = " " .. result end
     return result
 end
 
@@ -1050,10 +1156,12 @@ local function image_set_local_src(attrs, href)
     cleaned = image_remove_attr(cleaned, "data%-original")
     cleaned = image_remove_attr(cleaned, "data%-lazy%-src")
     cleaned = image_remove_attr(cleaned, "data%-actualsrc")
-    cleaned = image_remove_attr(cleaned, "data%-actual-src")
+    -- ⚠️ `data%-actual-src` 里的 `-` 必须转义：Lua 模式中 `-`
+    -- 是惰性量词，"data%-actual-src" 实际含义是
+    -- data-actua + l- + src，永远匹配不到 data-actual-src。
+    cleaned = image_remove_attr(cleaned, "data%-actual%-src")
     cleaned = image_remove_attr(cleaned, "srcset")
-    cleaned = cleaned:gsub("^%s+", "")
-    return ' src="' .. href .. '"' .. (cleaned or "")
+    return ' src="' .. href .. '"' .. cleaned
 end
 
 local function image_unique_href(used, prefix, index, ext)
@@ -1069,7 +1177,8 @@ local function image_unique_href(used, prefix, index, ext)
     return href
 end
 
-function Content.download_remote_images(client, xhtml, used_names, progress)
+function Content.download_remote_images(client, xhtml, used_names, progress, opts)
+    opts = opts or {}
     local assets = {}
     used_names = used_names or {}
     local source_map = {}  -- maps URL -> local href
@@ -1144,6 +1253,24 @@ function Content.download_remote_images(client, xhtml, used_names, progress)
                 return "<img" .. attrs .. ">"
             end
 
+            -- 漫画页图：CDN 返回的是 AES-256-GCM 密文（[12B IV][密文][16B tag]），
+            -- 必须先解密才能被识别成图片；解密失败按下载失败处理
+            -- （绝不能把密文当图片存下来，否则读者看到的是裂图/乱码）。
+            if opts.comic_key and opts.comic_key ~= "" then
+                local pt, derr
+                if Aes then
+                    pt, derr = Aes.gcm_decrypt(data, Aes.from_hex(opts.comic_key))
+                else
+                    derr = "aes 模块不可用"
+                end
+                if not pt then
+                    summary.failed = summary.failed + 1
+                    if logger then logger.warn("[漫画] 图片解密失败:", url, tostring(derr)) end
+                    return "<img" .. attrs .. ">"
+                end
+                data = pt
+            end
+
             local ext, mt = media_type_for(data)
             if not mt:match("^image/") then
                 summary.failed = summary.failed + 1
@@ -1154,7 +1281,9 @@ function Content.download_remote_images(client, xhtml, used_names, progress)
             -- Generate unique href
             local img_index = #assets + 1
             local href = image_unique_href(used_names, "img", img_index, ext)
-            local local_path = "../" .. href
+            -- 相对路径基准是章节 HTML 所在目录
+            -- （dir/chapter_*.html 与 dir/images/ 同级），不能再 "../" 退一级。
+            local local_path = href
 
             assets[#assets + 1] = {
                 href = href,
@@ -1201,8 +1330,7 @@ function Content.fetch_chapter_content(client, settings, book, chapter, opts)
 
     local t_fetch = now_ms()
     local fetch_opts = opts.review and { review = true } or nil
-    -- 第3返回值 rate_info：本轮记录的限流时间戳，透传给 fetch_chapter_html → 父进程合并
-    local result, _src_id, rate_info = client:get_chapter_content_with_fallback(book_id, item_id, fetch_opts)
+    local result = client:get_chapter_content_with_fallback(book_id, item_id, fetch_opts)
     local fetch_elapsed = now_ms() - t_fetch
 
     local content = result.content or ""
@@ -1211,14 +1339,42 @@ function Content.fetch_chapter_content(client, settings, book, chapter, opts)
         book.author = result.author
     end
 
+    -- 漫画章节（book_type=1）：正文是
+    -- {"itemId":…,"picInfos":[…]} 而不是 HTML。
+    -- 判定放在 PUA 解码之前 —— JSON 是纯结构 + URL，
+    -- 不需要（也不该）走 PUA 还原。
+    local comic_pics, comic_encrypt, comic_key_hex = Content.parse_comic_pics(content)
+
     local t_pua = now_ms()
     -- Only decode PUA if content actually contains PUA codepoints
     -- PUA range U+E3F8-U+E55C encodes to UTF-8 starting with 0xEE (238)
     -- Normal Chinese text (U+4E00-U+9FFF) starts with 0xE4-0xE9, never 0xEE
-    if content:find("\238", 1, true) then
+    if not comic_pics and content:find("\238", 1, true) then
         content = Content.decode_pua_content(content)
     end
     local pua_elapsed = now_ms() - t_pua
+
+    -- 漫画：一页一图，嗅探后直接就是最终的 <img> 序列，
+    -- 跳过 HTML 清洗和段评气泡注入。
+    if comic_pics then
+        if logger then
+            logger.info(LOG_MODULE, "[漫画] itemId=" .. item_id
+                .. " pages=" .. tostring(#comic_pics)
+                .. " encrypted=" .. tostring(comic_encrypt == true)
+                .. " title=" .. tostring(title))
+        end
+        return '<?xml version="1.0" encoding="utf-8"?>\n'
+            .. '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>'
+            .. xml_escape(title) .. '</title></head>\n'
+            .. '<body>\n' .. Content.render_comic_pics(comic_pics) .. '\n</body></html>',
+            result.para_reviews or {},
+            -- 第三个返回值：告诉下载管线这批 <img> 是加密漫画页
+            {
+                comic = true,
+                encrypt = comic_encrypt == true,
+                key_hex = comic_key_hex,
+            }
+    end
 
     local t_clean = now_ms()
 
@@ -1240,7 +1396,9 @@ function Content.fetch_chapter_content(client, settings, book, chapter, opts)
             "raw_content_len=" .. tostring(#content))
     end
 
-    if logger then
+    -- Debug 预览开销大（两次全文 gsub 拷贝），日志级别高于 debug 时跳过
+    local debug_on = logger and logger.is_debug_enabled and logger.is_debug_enabled()
+    if debug_on then
         -- Debug: dump original content to see where <img> tags sit in the source.
         -- Replace literal newlines with visible \n markers so log lines don't
         -- get collapsed, and tag every <img> with a [IMG@N] marker.
@@ -1256,11 +1414,13 @@ function Content.fetch_chapter_content(client, settings, book, chapter, opts)
     end
     local cleaned = Content.clean_chapter_content(content, title)
     local clean_elapsed = now_ms() - t_clean
-    if logger then
+    if debug_on then
         local preview2 = cleaned
         if #preview2 > 4000 then preview2 = preview2:sub(1, 4000) .. "...[truncated]" end
         logger.debug(LOG_MODULE, "[debug] cleaned content, len=" .. tostring(#cleaned) .. ":\n" .. preview2)
-        -- 验证清洗后的正文是否含气泡
+    end
+    -- 气泡统计（单遍 gmatch，开销小）保留在 INFO 级别，用于段评诊断
+    if logger then
         local bubble_count = 0
         for _ in cleaned:gmatch('class="para%-comment"') do
             bubble_count = bubble_count + 1
@@ -1286,8 +1446,7 @@ function Content.fetch_chapter_content(client, settings, book, chapter, opts)
     return '<?xml version="1.0" encoding="utf-8"?>\n'
         .. '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>' .. xml_escape(title) .. '</title></head>\n'
         .. '<body>\n' .. cleaned .. '\n</body></html>',
-        para_reviews,
-        rate_info
+        para_reviews
 end
 
 -- ---------------------------------------------------------------------------
@@ -1390,9 +1549,17 @@ function Content.save_chapter_html(settings, book, chapter, xhtml, assets, css)
         -- Replace only the src attribute in attrs, preserving all others (width, height, alt, ...)
         local new_attrs
         if quote_char then
-            new_attrs = attrs:gsub('(%ssrc%s*=%s*)["\'].-["\']', '%1' .. quote_char .. new_src .. quote_char, 1)
+            -- ⚠️ 必须用函数替换：替换串里的 `%` 会被当捕获引用解析，
+            -- 而 new_src 很可能是含 URL 编码的原始 CDN 地址
+            -- （如 x-signature=ZpJi%3D → `%3D` 被当成捕获 3 → invalid capture index）。
+            local _q = quote_char
+            new_attrs = attrs:gsub('(%ssrc%s*=%s*)["\'].-["\']', function(prefix)
+                return prefix .. _q .. new_src .. _q
+            end, 1)
         else
-            new_attrs = attrs:gsub('(%ssrc%s*=%s*)[^%s>]+', '%1' .. '"' .. new_src .. '"', 1)
+            new_attrs = attrs:gsub('(%ssrc%s*=%s*)[^%s>]+', function(prefix)
+                return prefix .. '"' .. new_src .. '"'
+            end, 1)
         end
         -- Safety fallback: if gsub missed, reconstruct manually
         if new_attrs == attrs then
@@ -1432,7 +1599,8 @@ function Content.fetch_chapter_html(client, settings, book, chapter, opts)
     local item_id = tostring(chapter.itemId)
 
     local t_fetch = now_ms()
-    local ok_fetch, xhtml, para_reviews, rate_info = pcall(Content.fetch_chapter_content, client, settings, book, chapter, opts)
+    local ok_fetch, xhtml, para_reviews, comic_meta =
+        pcall(Content.fetch_chapter_content, client, settings, book, chapter, opts)
     local fetch_elapsed = now_ms() - t_fetch
     if not ok_fetch then
         error("fetch_chapter_content failed: " .. tostring(xhtml))
@@ -1462,13 +1630,35 @@ a.para-comment {
 }
 ]]
     local assets = {}
-    local cache = settings:get("cache", {})
+    local cache = settings:get("cache")
     local img_elapsed = 0
+
+    -- 🔴 下载心跳：图集/漫画一章就是几十张整页大图（实测《未知生物大百科》单章
+    --    22~49 页 × 约 400 KB），整章下完要 1~5 分钟，远超 Async 的 timeout。
+    --    这里把「已下载/总数」写进心跳文件，父进程据此**续期**并显示进度
+    --    （见 fanqie/async.lua 的 opts.heartbeat）。写失败对下载本身毫无影响。
+    local heartbeat = nil
+    if type(opts.heartbeat_path) == "string" and opts.heartbeat_path ~= "" then
+        local hb_path = opts.heartbeat_path
+        heartbeat = function(done, total)
+            pcall(H.write_file, hb_path, string.format("%d/%d",
+                tonumber(done) or 0, tonumber(total) or 0))
+        end
+    end
+
     -- Match menu semantics: download unless explicitly disabled (nil/true → download)
     if cache.download_book_images ~= false then
         local used_names = {}
         local t_img = now_ms()
-        local ok_img, inline_xhtml, inline_assets = pcall(Content.download_remote_images, client, xhtml, used_names)
+        -- 加密漫画：把 encrypt_key 传下去，下载后逐图解密
+        local img_opts = nil
+        if comic_meta and comic_meta.encrypt and comic_meta.key_hex and comic_meta.key_hex ~= "" then
+            img_opts = { comic_key = comic_meta.key_hex }
+        end
+        -- 先敲一次心跳：让父进程知道「已经进入图片阶段」，不必干等到第一张落盘
+        if heartbeat then heartbeat(0, 0) end
+        local ok_img, inline_xhtml, inline_assets =
+            pcall(Content.download_remote_images, client, xhtml, used_names, heartbeat, img_opts)
         img_elapsed = now_ms() - t_img
         if ok_img and inline_xhtml then
             xhtml = inline_xhtml
@@ -1514,7 +1704,7 @@ a.para-comment {
             "assets_count=" .. tostring(#assets))
     end
 
-    return path, chapter, para_reviews, rate_info
+    return path, chapter, para_reviews
 end
 
 -- 段评数据持久化：保存/加载每个章节的段评索引

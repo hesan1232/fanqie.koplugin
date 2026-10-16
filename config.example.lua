@@ -13,86 +13,35 @@ return {
         ["sessionid"] = "",
     },
 
-    -- 晴天聚合服务器配置（仅用于获取正文，目录和书架仍使用官方API）
-    qingtian = {
-        -- 晴天服务器地址
-        server_url = "https://v1.gyks.cf/",
-        -- 可用服务器列表（自动检测时按顺序尝试）
-        servers = {
-            "https://v1.gyks.cf",
-            "https://v2.gyks.cf",
-            "https://v3.gyks.cf",
-            "https://v4.gyks.cf",
-        },
-        -- 晴天账号（邮箱）
-        username = "",
-        -- 晴天密码
-        password = "",
-        -- token（登录后自动获取，无需手动填写）
-        token = "",
-        -- 设备ID（自动生成，无需手动填写）
-        device_id = "",
-        -- 是否自动登录（当 token 过期时自动重新登录）
-        auto_login = true,
-        -- 请求频率限制
-        rate_limit = {
-            max_requests = 5,      -- 最大请求数
-            window_seconds = 30,   -- 时间窗口（秒）
-        },
-    },
-
-    -- 大灰狼聚合服务器配置
-    -- 可用后端地址（任选其一，程序会自动检测可用线路）：
-    --   https://v2.czyl.cf
-    --   https://v4.czyl.cf
-    --   https://v5.czyl.cf
-    --   https://v7.czyl.cf
-    --   https://v8.czyl.cf
-    --   https://v9.czyl.cf
-    --   https://v10.czyl.cf
-    dahuilang = {
-        -- 大灰狼服务器地址（默认使用第一个可用线路）
-        server_url = "https://v2.czyl.cf",
-        -- 可用服务器列表（自动检测时按顺序尝试）
-        servers = {
-            "https://v2.czyl.cf",
-            "https://v4.czyl.cf",
-            "https://v5.czyl.cf",
-            "https://v7.czyl.cf",
-            "https://v8.czyl.cf",
-            "https://v9.czyl.cf",
-            "https://v10.czyl.cf",
-        },
-        -- 大灰狼账号（邮箱）
-        username = "",
-        -- 大灰狼密码
-        password = "",
-        -- 大灰狼密钥（可选，优先于账号密码登录）
-        key = "",
-        -- token（登录后自动获取，无需手动填写）
-        token = "",
-        -- 设备ID（自动生成，无需手动填写）
-        device_id = "",
-        -- 是否自动登录（当 token 过期时自动重新登录）
-        auto_login = true,
-        -- 原始书源（番茄/七猫/塔读等）
-        source = "番茄",
-        -- 请求频率限制
-        rate_limit = {
-            max_requests = 5,      -- 最大请求数
-            window_seconds = 30,   -- 时间窗口（秒）
-        },
-    },
+    -- 书源说明：v2.4.0 起章节正文/段评统一走番茄官方 App 协议，
+    -- 无需任何账号配置；以下仅保留通用偏好设置。
 
     sync = {
         pull_on_open = true,
         upload_on_close = true,
+        -- 阅读中定期上传进度的间隔（分钟）：0 = 关闭。默认 3。
+        -- 只在进度有前进时才真的发包；读到一半退出也不会丢。
+        upload_interval_minutes = 3,
     },
 
     cache = {
         download_book_images = true,
         pre_download_chapters = 3,
         pre_download_groups = 2,
+
+        -- 批量下载（预下载 / 整本下载）节流。番茄服务端对短时间高频抓取有风控特征，
+        -- 逐章连打会放大该特征；下面这组取值对齐官方 App 协议的生产实现：
+        -- 章间隔 1.0~1.8s（1.0 + 抖动）+ 每 20 章长休 6s。
+        request_interval = 1.0,           -- 章间隔（秒）；0 = 完全关闭节流
+        request_interval_jitter = 0.6,    -- 抖动上限（秒）；固定节奏本身就是风控特征
+        request_batch_size = 20,          -- 每多少章长休一次；0 = 关闭长休
+        request_batch_rest = 6.0,         -- 长休时长（秒）；0 = 关闭长休
+    },
+
+    -- 书架排序（也可在书架左上角菜单里点选；菜单里的选择优先于这里）
+    shelf = {
+        sort_order = "last_read",  -- last_read | title | progress | shelf_order
+        sort_asc = false,          -- 留空 / nil = 用该排序键的默认方向
     },
 
     reading = {

@@ -2,7 +2,6 @@
 -- 公共下载模块：书架 + 阅读界面共用同一套下载选项与执行逻辑。
 -- 特性：
 --   * 下载选项对话框（全部/前10章/当前阅读后N章/剩余全部/自定义范围）
---   * 严格按书源 rate_limit 配置主动等待（通过 rate_limit_peek 预检）
 --   * 进度条显示预估剩余时间（实测滚动平均耗时）
 --   * 跳过已缓存章节、取消、失败统计
 
@@ -13,7 +12,6 @@ local ok_util, util = pcall(require, "util")
 local ok_ffiutil, ffiutil = pcall(require, "ffi/util")
 local ok_H, H = pcall(require, "fanqie.helper")
 local ok_Content, Content = pcall(require, "fanqie.content")
-local ok_SM, SM = pcall(require, "fanqie.sources")
 local ok_state, _state = pcall(require, "fanqie.state")
 local ok_DLProgress, DownloadProgress = pcall(require, "fanqie.download_progress")
 local ok_Log, Log = pcall(require, "fanqie.logger")
@@ -55,42 +53,6 @@ local function getCachedChapters(settings, book)
     return book.cached_chapters
 end
 
--- 频次预检：若所有活跃源都被限流，主动等待窗口恢复。
--- 返回 true 表示至少一个源可用；false 表示用户取消。
-local function waitForRateLimit(settings, dialog, current, total)
-    if not ok_SM then return true end
-    while true do
-        local sources = SM.get_active_sources(settings)
-        if #sources == 0 then return true end  -- 无源配置，交给 fetch 报错
-        local max_wait = 0
-        local any_ok = false
-        for _, src in ipairs(sources) do
-            local rl = src.config.rate_limit or {}
-            local ok, wait = SM.rate_limit_peek(src.id, rl.max_requests, rl.window_seconds)
-            if ok then any_ok = true; break end
-            if wait and wait > max_wait then max_wait = wait end
-        end
-        if any_ok then return true end
-        if dialog:isCanceled() then return false end
-        local wait_int = math.max(1, math.ceil(max_wait))
-        dialog:setState{
-            stage = "rate_limit",
-            current = current, total = total,
-            message = string.format("剩余 %ds", wait_int),
-        }
-        -- 分段睡，每秒检查取消并更新剩余等待
-        for i = 1, wait_int do
-            if dialog:isCanceled() then return false end
-            if ok_util then util.sleep(1) else os.execute("sleep 1") end
-            dialog:setState{
-                stage = "rate_limit",
-                current = current, total = total,
-                message = string.format("剩余 %ds", wait_int - i),
-            }
-        end
-    end
-end
-
 -- 执行下载（异步递归实现，UI 线程仅做进度刷新与调度，不阻塞）
 -- 每一章的 HTTP 请求通过 Async.run 放到子进程，父进程拿到结果后递归调度下一章。
 function Download.execute(parent, book, chapters, start_idx, end_idx)
@@ -99,6 +61,15 @@ function Download.execute(parent, book, chapters, start_idx, end_idx)
     local total = end_idx - start_idx + 1
     local b = { book_id = book.book_id, title = book.title, author = book.author }
     local self_ref = parent
+    -- 相邻两章之间的节流参数（基础间隔 + 随机抖动 + 每 N 章长休）统一由
+    -- helper.next_request_delay 给出，见 fanqie/helper.lua 的说明。
+    -- 参数取值对齐同一套 App 协议的生产实现（kindle-forge cache.py）。
+    local function next_delay(processed)
+        if ok_H and H and H.next_request_delay then
+            return H.next_request_delay(settings, processed)
+        end
+        return 1.0
+    end
 
     -- 设置全局下载任务状态
     if ok_state and _state then
@@ -112,6 +83,11 @@ function Download.execute(parent, book, chapters, start_idx, end_idx)
             start_time = os.time(),
         })
     end
+    -- 保留本流程的任务表引用。
+    -- 🔴 不要用 `_state.getDownloadTask()` 现取：从「下载管理」取消时会先把全局任务
+    --    清成 nil，现取就什么都拿不到 ⇒ 被取消的任务在历史记录里**凭空消失**。
+    local my_task = ok_state and _state and _state.getDownloadTask() or nil
+
     if ok_Log and Log then
         Log.info("[Download] execute: book=" .. tostring(book.title or book.book_id)
             .. " range=" .. tostring(start_idx) .. "-" .. tostring(end_idx)
@@ -119,7 +95,9 @@ function Download.execute(parent, book, chapters, start_idx, end_idx)
     end
 
     local dialog = DownloadProgress:new{
-        title = T(_("下载 %s"), book.title or book.book_id),
+        -- 🔴 T 是 util.template，占位符只有 %1/%2 风格；写成 %s 会被**原样显示**
+        --    （进度框最顶上出现「下载 %s」字样，实测踩中）。
+        title = T(_("下载 %1"), book.title or book.book_id),
     }
     -- 设置后台运行回调（对话框关闭但下载继续）
     -- 关键：关闭后必须确保有 widget 显示，否则 UIManager 会退出，内存状态丢失
@@ -152,6 +130,8 @@ function Download.execute(parent, book, chapters, start_idx, end_idx)
         downloaded = 0,
         failed = 0,
         skipped = 0,
+        -- 真正发过请求的章节数（跳过缓存的章节不计入节流额度）
+        processed = 0,
         cached_chapters = {},
         book = book,
         chapters = chapters,
@@ -184,7 +164,17 @@ function Download.execute(parent, book, chapters, start_idx, end_idx)
         end
     end
 
+    -- `finished` 防重入：取消路径（requestDownloadCancel 的 handler）会在当前章
+    -- 的子进程被掐掉后直接调 finish()，而 schedule_next 里的取消检查也可能再调一次
+    -- ⇒ 不挡住就会「弹两次提示 + 写两条历史」。
+    local finished = false
     local function finish()
+        if finished then return end
+        finished = true
+        -- 本次流程结束了，撤掉取消入口（否则下一次下载的取消会打到一个已死的流程上）
+        if ok_state and _state and _state.setDownloadCancelHandler then
+            _state.setDownloadCancelHandler(nil)
+        end
         if not dialog._backgrounded then
             dialog:close()
         end
@@ -196,9 +186,12 @@ function Download.execute(parent, book, chapters, start_idx, end_idx)
                 .. " cancelled=" .. tostring(cancelled)
                 .. " backgrounded=" .. tostring(dialog._backgrounded))
         end
-        -- 清除全局下载任务
+        -- 写历史 + 清除全局下载任务
         if ok_state and _state then
-            local task = _state.getDownloadTask()
+            -- 🔴 用 my_task（本流程开始时的引用），不要现取：
+            --    「从下载管理取消」会先把全局任务清成 nil，现取会让这次取消
+            --    既没有历史记录、也看不出是被取消的。
+            local task = my_task or _state.getDownloadTask()
             if task then
                 task.status = cancelled and "cancelled" or "completed"
                 task.current = state.downloaded
@@ -220,11 +213,28 @@ function Download.execute(parent, book, chapters, start_idx, end_idx)
         if cancelled and state.downloaded < state.total then
             self_ref:showInfo(T(_("已取消下载\n已保存 %1/%2 章"), state.downloaded, state.total))
         else
-            local msg = T(_("下载完成!\n《%s》共 %1/%2 章"), book.title or book.book_id, state.downloaded, state.total)
-            if state.skipped > 0 then msg = msg .. T(_(" (跳过已缓存 %d 章)"), state.skipped) end
-            if state.failed > 0 then msg = msg .. T(_(" (失败 %d 章)"), state.failed) end
+            local msg = T(_("下载完成!\n《%1》共 %2/%3 章"), book.title or book.book_id, state.downloaded, state.total)
+            if state.skipped > 0 then msg = msg .. T(_(" (跳过已缓存 %1 章)"), state.skipped) end
+            if state.failed > 0 then msg = msg .. T(_(" (失败 %1 章)"), state.failed) end
             self_ref:showInfo(msg)
         end
+    end
+
+    -- 立即取消入口（见 fanqie/state.lua 的 requestDownloadCancel 说明）：
+    -- 「下载管理 → 取消下载」调 _state.requestDownloadCancel()，这里掐掉当前章的
+    -- 子进程并马上收尾 —— 否则要白等这一章跑完（图集单章 1~5 分钟）。
+    local current_handle = nil
+    if ok_state and _state and _state.setDownloadCancelHandler then
+        _state.setDownloadCancelHandler(function()
+            dialog.cancelled = true
+            -- Async 的 cancel() 之后 on_done 不会再执行 ⇒ 「下一章」的调度链就断在这里，
+            -- 必须自己 finish（写历史 / 关进度框 / 清全局状态）。
+            if current_handle and type(current_handle.cancel) == "function" then
+                pcall(current_handle.cancel)
+            end
+            current_handle = nil
+            finish()
+        end)
     end
 
     -- 轮询式调度：每次下载一章 -> 子进程回调 -> UIManager:scheduleIn 触发下一章
@@ -268,46 +278,26 @@ function Download.execute(parent, book, chapters, start_idx, end_idx)
             return
         end
 
-        -- 频次预检 + 等待（UI 线程本地判断，非 IO）
-        if ok_SM and SM then
-            local sources = SM.get_active_sources(settings)
-            if #sources == 0 then
-                -- 无源配置，继续让子进程尝试，由子进程报错
-            else
-                local any_ok = false
-                local max_wait = 0
-                for _, src in ipairs(sources) do
-                    local rl = src.config.rate_limit or {}
-                    local rl_ok, wait = SM.rate_limit_peek(src.id, rl.max_requests, rl.window_seconds)
-                    if rl_ok then any_ok = true; break end
-                    if wait and wait > max_wait then max_wait = wait end
-                end
-                if not any_ok and max_wait > 0 then
-                    local wait_int = math.max(1, math.ceil(max_wait))
-                    dialog:setState{
-                        stage = "rate_limit",
-                        current = state.downloaded, total = state.total,
-                        message = string.format("剩余 %ds", wait_int),
-                    }
-                    UIManager:scheduleIn(wait_int, function() schedule_next(idx) end)
-                    return
-                end
-            end
-        end
+        -- 频次预检已移除：官方 App 协议为唯一书源，无用户级限流配置
 
         updateProgress("content", chapter_title)
 
         -- 子进程内下载章节（HTTP + 文件 IO），UI 线程不阻塞
-        local fetch_opts = state.review_enabled and { review = true, skip_cache_index = true }
-            or { skip_cache_index = true }
+        -- 心跳：图集/漫画单章几十页大图，整章下载轻松超过 90s；没有心跳的话
+        -- Async 会按**总时长**把子进程掐掉，已下好的几十页全丢（见 async.lua 的 opts.heartbeat）。
+        local hb_path = nil
+        if self_ref._downloadHeartbeatPath then
+            local ok_hb, p = pcall(self_ref._downloadHeartbeatPath, self_ref, book)
+            if ok_hb then hb_path = p end
+        end
+        local fetch_opts = state.review_enabled
+            and { review = true, skip_cache_index = true, heartbeat_path = hb_path }
+            or { skip_cache_index = true, heartbeat_path = hb_path }
         local work_fn = function()
-            local path, ch, para_reviews, rate_info = Content.fetch_chapter_html(
-                client, settings, b, chapter, fetch_opts
-            )
+            local path = Content.fetch_chapter_html(client, settings, b, chapter, fetch_opts)
             return {
                 path = path,
                 item_id = item_id,
-                rate_info = rate_info,
             }
         end
 
@@ -320,10 +310,6 @@ function Download.execute(parent, book, chapters, start_idx, end_idx)
             else
                 state.cached_chapters[result.item_id] = result.path
                 state.downloaded = state.downloaded + 1
-                -- 合并子进程限流时间戳（子进程会随退出丢失）
-                if result.rate_info and ok_SM and SM and SM.merge_rate_limit_timestamps then
-                    SM.merge_rate_limit_timestamps(result.rate_info)
-                end
                 -- 父进程持久化 cache_index
                 if ok_Content and Content and Content.save_cache_index then
                     Content.save_cache_index(settings, book.book_id, state.cached_chapters)
@@ -336,12 +322,16 @@ function Download.execute(parent, book, chapters, start_idx, end_idx)
                 finish()
                 return
             end
-            -- 继续下一章（scheduleIn 而非直接递归，让出 UI 事件循环）
-            UIManager:scheduleIn(0, function() schedule_next(idx + 1) end)
+            -- 继续下一章（scheduleIn 而非直接递归，让出 UI 事件循环）；
+            -- 间隔 = 基础间隔 + 随机抖动，每 N 章再长休一次，避免逐章连打触发服务端风控
+            state.processed = state.processed + 1
+            UIManager:scheduleIn(next_delay(state.processed), function() schedule_next(idx + 1) end)
         end
 
         if ok_Async and Async and Async.run then
-            Async.run(work_fn, on_done, { poll_interval = 0.125, timeout = 90 })
+            -- tag 便于 Async.cancel_tag("download") / 诊断活动子进程数
+            current_handle = Async.run(work_fn, on_done,
+                { poll_interval = 0.125, timeout = 90, heartbeat = hb_path, tag = "download" })
         else
             -- 降级：同步执行（极少触发，仅当 Async 模块未加载）
             local ok_sync, res = pcall(work_fn)

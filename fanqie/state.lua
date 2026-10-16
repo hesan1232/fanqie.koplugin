@@ -8,6 +8,11 @@ local M = {
     cached_directory = nil,
     pending_progress = {},
     last_progress_report = {},
+    -- 阅读中定期上传的定时器开关 / 代际 token。
+    -- 切章会重建 ReaderUI（连带插件实例），定时器链必须靠 token 认出「我已被换掉」，
+    -- 否则新旧两条链并存 ⇒ 上传频率翻倍（见 main.lua 的 _ensureProgressTimer）。
+    progress_timer_on = false,
+    progress_timer_token = 0,
     cached_chapter_index = {},
     toc_menu_open = false,
     pre_download_triggered = false,
@@ -49,6 +54,8 @@ function M.loadReviewState(settings)
     end
     -- 加载持久化的下载历史和任务状态
     M.loadDownloadState()
+    -- 加载上一次退出时没传完的进度（见下方 persistPendingProgress 的说明）
+    M.loadPendingProgress()
 end
 
 -- 把 enable_review 持久化到 Settings（若 settings 可用）
@@ -113,6 +120,103 @@ M.isCurrentDocFanqie = function(file_path)
     local path = file_path or M.current_document_path
     if not path then return false end
     return path:lower():find('/fanqie/', 1, true) or false
+end
+
+--- 从章节文档路径反推番茄书号（纯函数）。
+--
+-- 路径形状（见 fanqie/content.lua 的 book_cache_dir / save_chapter_html）：
+--     <cache_dir>/<book_id>/chapter_<item_id>.html
+--
+-- 🔴 为什么需要它：`current_book` **不持久化**（只有 openBook / openChapter /
+--    showChapterListing 三处赋值）。重启 KOReader 后从「最近阅读 / 文件管理器」
+--    直接打开章节续读时它是 nil，而文档路径里其实带着书号 —— 阅读界面的
+--    「加入/移出书架」就靠这个函数把书号捞回来。
+--    调用方（main.lua 的 getCurrentBook）还会拿缓存目录反查校验一次，
+--    避免把用户自己放在别处的同名 `chapter_*.html` 误认成番茄章节。
+--
+-- @param path string|nil
+-- @return string|nil book_id
+M.book_id_from_path = function(path)
+    if type(path) ~= "string" then return nil end
+    local id = path:match("/([^/]+)/chapter_[^/]+%.html$")
+    if id == nil or id == "" then return nil end
+    return id
+end
+
+--- 从章节文档路径反查**章节 item_id**。
+--
+-- 🔴 为什么需要它（「上传进度有时候有问题」的根因）：
+--    切章 = 关掉旧 ReaderUI 再开新的（main.lua 的 showReaderUI 走
+--    `ReaderUI:showReader`，其 `doShowReader` 会 `ReaderUI.instance:onClose()`），
+--    KOReader 在 onClose 里派发 `CloseDocument` —— 也就是**每次切章都会走一遍**
+--    本插件的 `onCloseDocument`。而 `navigateToChapter` 远在那之前就把
+--    `current_chapter_index` 改成了**新章**。
+--    ⇒ 「关文档时补发进度」只能按**这份文档属于哪一章**取号，
+--      真值来源是文档路径（`<cache>/<book_id>/chapter_<item_id>.html`），
+--      不是 `current_chapter_index`。否则会把旧章的页进度写成新章的进度
+--      （末页翻章时 progress≈1.0 ⇒ 新章被标记成「已读完」）。
+--
+-- @param path string|nil
+-- @return string|nil item_id
+M.item_id_from_path = function(path)
+    if type(path) ~= "string" then return nil end
+    local id = path:match("/chapter_([^/]+)%.html$")
+    if id == nil or id == "" then return nil end
+    return id
+end
+
+-- 待上传进度的磁盘持久化。
+--
+-- 🔴 为什么必须落盘：`pending_progress` 以前只在内存里、而且**只在失败回调**里登记。
+--    可是失败回调本身依赖 UI 循环继续跑（Async 的 poll 由 UIManager:scheduleIn 驱动），
+--    用户在「上传在途」时退出 KOReader / 切书 / 被系统杀掉 ⇒ on_done 永不执行
+--    ⇒ 既没上传成功、也没留下任何记录 = **静默丢进度**。
+--    所以现在的口径是：**发起的那一刻就登记**（内存），失败与退出时落盘，
+--    下次启动/进书时由 retryPendingProgress 重试。
+M.persistPendingProgress = function()
+    if not M._settings_ref then return end
+    pcall(function()
+        M._settings_ref:set("pending_progress", M.pending_progress)
+        M._settings_ref:flush()
+    end)
+end
+
+-- 待传进度的保留策略：超过 TTL 的丢掉（章节可能已下架，重试也不会成功），
+-- 条数超过上限时丢最旧的 —— 否则「每次进书都重试一遍 pending」会变成无休止打接口。
+local PENDING_TTL_SECONDS = 7 * 24 * 3600
+local PENDING_MAX_ITEMS = 100
+
+-- 读回时做一次清理（TTL + 条数上限），返回被丢掉的条数（便于日志/测试观察）。
+M.loadPendingProgress = function()
+    if not M._settings_ref then return nil end
+    local ok, val = pcall(function() return M._settings_ref:get("pending_progress") end)
+    if not ok or type(val) ~= "table" then return nil end
+
+    local now = os.time()
+    local kept, dropped = {}, 0
+    for key, item in pairs(val) do
+        local ts = (type(item) == "table") and tonumber(item.timestamp) or nil
+        if type(item) == "table" and (ts == nil or (now - ts) <= PENDING_TTL_SECONDS) then
+            kept[key] = item
+        else
+            dropped = dropped + 1
+        end
+    end
+
+    local keys = {}
+    for k in pairs(kept) do keys[#keys + 1] = k end
+    if #keys > PENDING_MAX_ITEMS then
+        table.sort(keys, function(a, b)
+            return (tonumber(kept[a].timestamp) or 0) < (tonumber(kept[b].timestamp) or 0)
+        end)
+        for i = 1, #keys - PENDING_MAX_ITEMS do
+            kept[keys[i]] = nil
+            dropped = dropped + 1
+        end
+    end
+
+    M.pending_progress = kept
+    return dropped
 end
 
 M.addPendingProgress = function(book_id, item_id, chapter_idx, progress)
@@ -291,6 +395,30 @@ M.clearDownloadTask = function()
     M.download_task = nil
     M.is_downloading = false
     persist_download_task()
+end
+
+-- 「从下载管理取消」的立即生效入口。
+--
+-- 🔴 为什么需要它（而不是只看 M.download_task 还在不在）：
+--    download.lua 只在**每一章开始之前**检查 `not _state.download_task`，
+--    而单章下载跑在 Async 子进程里 —— 图集/漫画一整章几十页大图，实测 1~5 分钟。
+--    于是「点取消」的真实表现是「进度条继续往前爬几分钟」，用户以为取消没生效。
+--    下载流程开始时会注册一个 handler，这里回调它：立刻掐掉当前章的子进程并收尾
+--    （close 进度框、写历史、清状态），做到「一点就停」。
+M._download_cancel_handler = nil
+
+M.setDownloadCancelHandler = function(fn)
+    M._download_cancel_handler = type(fn) == "function" and fn or nil
+end
+
+M.requestDownloadCancel = function()
+    M.download_cancel_requested = true
+    if type(M._download_cancel_handler) == "function" then
+        local ok, err = pcall(M._download_cancel_handler)
+        if not ok then
+            print("[FanQie][state] requestDownloadCancel handler error: " .. tostring(err))
+        end
+    end
 end
 
 M.addDownloadHistory = function(task)
