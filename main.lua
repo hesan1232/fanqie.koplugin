@@ -196,6 +196,16 @@ if not ok_state then
     _state.chapter_navigating = false
     function _state.setChapterNavigating(v) _state.chapter_navigating = v == true end
     function _state.isChapterNavigating() return _state.chapter_navigating == true end
+    -- 书架状态快照：真模块里由 bookshelf / store_ui 维护。回退态下没有数据源，
+    -- 一律回「未知」（nil）—— 调用方本来就必须处理 nil（文案走乐观兜底、
+    -- 退出提示静默跳过），所以这里的降级是安全的。
+    _state.shelf_all = nil
+    _state.shelf_known = {}
+    _state.shelf_prompted = {}
+    function _state.setShelfAll() _state.shelf_all = nil end
+    function _state.clearShelfAll() _state.shelf_all = nil end
+    function _state.markShelf() end
+    function _state.shelfState() return nil end
 end
 
 local function getCurrentChapterIndex()
@@ -259,6 +269,19 @@ function FanQiePlugin:getCurrentBook()
     return { book_id = book_id }
 end
 
+--- 当前这本书「在不在书架」的**同步**判断。
+-- @return true=在架 / false=不在架 / nil=未知
+-- 🔴 为什么必须同步：菜单项文案由 `Menu.getMenuText` 在每次重绘时同步求值，
+--    不可能等一次网络往返。所以判据只能是 `_state` 的书架快照（见 state.lua）。
+--    快照缺数据（冷启动、从没读过书架列表）时**不要**退化成联网去查 ——
+--    那会把菜单打开拖成一个网络等待。返回 nil，由调用方决定兜底文案。
+function FanQiePlugin:isCurrentBookOnShelf()
+    if not (_state and type(_state.shelfState) == "function") then return nil end
+    local book = self:getCurrentBook()
+    if type(book) ~= "table" or not book.book_id then return nil end
+    return _state.shelfState(book.book_id)
+end
+
 function FanQiePlugin:init()
     self.settings = Settings:new()
     Log.init(self.settings)
@@ -298,6 +321,7 @@ local BOOKSHELF_MIXIN = {
     "clearShelfCache", -- 三层清缓存（显示层内存 / client API 短缓存 / 文件）
     "showBookshelf",   -- 书架入口（异步拉取 + 缓存回退 + 后台刷新）
     "get_shelf",       -- 拉取书架列表并归一化（子进程内执行）
+    "ensureShelfSnapshot", -- 同步补齐「书架状态快照」（纯本地文件，绝不联网）
 }
 if Bookshelf then
     for _, name in ipairs(BOOKSHELF_MIXIN) do
@@ -443,10 +467,23 @@ function FanQiePlugin:addToMainMenu(menu_items)
                     },
                     {
                         -- 阅读界面直接管理当前这本书的书架状态（v2.12.0）。
-                        -- 文案不写「加入」或「移出」——菜单是**同步**构建的，而
-                        -- 是否在架要打一次 shelf_check（异步）；写了方向就会和
-                        -- 实际反着来（这正是书城那边两颗按钮一起摆的老毛病）。
-                        text = _("加入/移出书架"),
+                        -- 🔴 文案按**实际书架状态**给（v2.16.0）。以前一律写
+                        --    「加入/移出书架」，等于把两个方向摆在一起让用户自己猜 ——
+                        --    在架的书该显示「移出书架」、不在架的该显示「加入书架」。
+                        --    判据是 `_state` 的书架快照（纯内存 O(1)，见 state.lua），
+                        --    在 `text_func` 里**同步**求值：koreader 的
+                        --    `Menu.getMenuText` 每次 `updateItems` 都会调用它
+                        --    ⇒ 菜单一打开，方向就是对的。
+                        -- 未知（冷启动且本地没有书架缓存）时乐观显示「加入书架」：
+                        --    加入是可逆的，而「移出书架」是破坏性动作 —— 宁可猜前者。
+                        --    （点击后 `toggleCurrentBookShelf` 仍会先 shelf_check 复核，
+                        --      所以即便猜错也不会做错事，只是文案多一次翻转。）
+                        text_func = function()
+                            if self:isCurrentBookOnShelf() == true then
+                                return _("移出书架")
+                            end
+                            return _("加入书架")
+                        end,
                         callback = self:safeCallback(_("加入/移出书架"), function()
                             self:toggleCurrentBookShelf()
                         end),
@@ -3023,6 +3060,9 @@ function FanQiePlugin:toggleCurrentBookShelf()
             self:showError(_("查询书架状态失败，请检查网络与 Cookie"))
             return
         end
+        -- 这次查询就是一份确定结论 ⇒ 写进书架快照：菜单文案下一次打开即正确，
+        -- 而且「退出阅读时是否提示加入书架」也就不用再查一遍（见 state.lua）。
+        if _state and _state.markShelf then _state.markShelf(book_id, on_shelf) end
         if not on_shelf then
             if type(self.toggleStoreShelf) == "function" then
                 self:toggleStoreShelf(book, true)
@@ -3049,6 +3089,102 @@ function FanQiePlugin:toggleCurrentBookShelf()
         -- 取消后回调不执行：loading 必须在这里自己关
         on_cancel = function() pcall(function() self:closeBusy() end) end,
     })
+end
+
+--- 离开这本书时：若它**不在书架**，问一次「是否加入书架」。
+--
+-- 🔴 三个必须守住的边界（每一条都对应一个会真的踩到的场景）：
+--
+--    ① **切章也会走到这里**。调用点 `onCloseDocument` 在切章时同样触发
+--       （`ReaderUI:doShowReader` 会先 `ReaderUI.instance:onClose()`）。
+--       判据是「延后一拍看 `ReaderUI.instance` 是否还在」——
+--       切章/换书路径在**同一个同步块**里就把新实例 `UIManager:show` 出去了
+--       （中间不 yield），所以 nextTick 回调跑时 instance 已存在；而真退出
+--       （onHome / 关闭阅读）走到 `ReaderUI.onCloseWidget`，那里把 instance 置 nil。
+--       ⇒ 只有 instance 为 nil 才认为「用户真的离开了这本书」。
+--
+--    ② **不能每次退出都问**。同一本书读过 5 次被问 5 次谁受得了 ——
+--       按书号记「已问过」（`_state.shelf_prompted`）。这是**进程内**节流，
+--       刻意不落盘：重启后重问一次的代价，远小于为此多维护一份持久化状态。
+--
+--    ③ **「未知」不等于「不在架」**。冷启动续读时快照可能还是未知（用户从没读过
+--       书架列表）。此时**不能**凭猜测弹「加入书架」—— 在架的书会被问错方向。
+--       所以：先同步补一次本地书架缓存（`ensureShelfSnapshot`，零网络），
+--       还未知才发一次 `shelf_check`（39 B）；连查都查不到（离线）就静默放弃。
+--       **不能确定方向，就不要打扰用户**。
+function FanQiePlugin:_promptAddShelfOnLeave()
+    local book = self:getCurrentBook()
+    if type(book) ~= "table" or not book.book_id then return end
+    if not (_state and type(_state.shelfState) == "function") then return end
+    local book_id = tostring(book.book_id)
+    _state.shelf_prompted = _state.shelf_prompted or {}
+    if _state.shelf_prompted[book_id] then return end
+
+    local self_ref = self
+
+    local function ask(on_shelf)
+        if on_shelf ~= false then return end   -- 在架 / 仍未知 ⇒ 不打扰
+        -- 不论用户怎么选都记「问过」：点「不用了」就不该再被问第二次。
+        _state.shelf_prompted[book_id] = true
+        local title = tostring(book.title or book.book_name or book_id)
+        UIManager:show(ConfirmBox:new{
+            text = T(_("《%1》还没加入书架，要加入吗？"), title),
+            ok_text = _("加入书架"),
+            cancel_text = _("不用了"),
+            ok_callback = function()
+                if type(self_ref.toggleStoreShelf) == "function" then
+                    -- 复用书城那条路径：它会 showBusy / 写快照 / 失效书架缓存
+                    self_ref:toggleStoreShelf({ book_id = book_id, title = title }, true)
+                end
+            end,
+        })
+    end
+
+    -- 「真的离开了阅读」：切章 / 换书时 instance 还在（见边界 ①）。
+    local function left_reading()
+        local ok_rui, RUI = pcall(require, "apps/reader/readerui")
+        if ok_rui and RUI and RUI.instance then return false end
+        return true
+    end
+
+    -- 未知 ⇒ 先同步补本地缓存（内存 → 文件，绝不联网），能补上就省一次请求。
+    if _state.shelfState(book_id) == nil and type(self.ensureShelfSnapshot) == "function" then
+        pcall(function() self:ensureShelfSnapshot() end)
+    end
+    local known = _state.shelfState(book_id)
+
+    if known ~= nil then
+        -- 已有确定结论：只等一拍确认「真的离开了阅读」。
+        UIManager:nextTick(function()
+            if left_reading() then ask(known) end
+        end)
+        return
+    end
+
+    -- 还是未知：等一拍确认离开阅读后，查一次（39 B），查到才问。
+    UIManager:nextTick(function()
+        if not left_reading() then return end
+        if not (Store and Store.shelf_check) then return end
+        if not self_ref:checkNetwork() then return end
+        local client = self_ref.client
+        Async.run(function()
+            -- 括号：Async 只回传第一个返回值，显式丢弃 err（失败时首值是 nil）
+            return { on_shelf = (Store.shelf_check(client, book_id)) }
+        end, function(ok, res)
+            local on_shelf
+            if ok and type(res) == "table" and type(res.on_shelf) == "boolean" then
+                on_shelf = res.on_shelf
+                -- 结论写进快照：下次（同一次运行内）就不用再查了
+                if _state.markShelf then _state.markShelf(book_id, on_shelf) end
+            end
+            ask(on_shelf)
+        end, {
+            poll_interval = 0.3,
+            timeout = 15,
+            -- 独立 tag：别让切章/关菜单的 cancel_tag 把这次查询掐掉
+            tag = "shelf_prompt",
+        })
+    end)
 end
 
 -- 书籍详情对话框的**唯一**关闭入口。
@@ -4308,6 +4444,15 @@ function FanQiePlugin:onCloseDocument()
     end
     -- 还没传成功的进度落盘，下次启动能补
     _state.persistPendingProgress()
+    -- 离开这本书时，若它不在书架，问一次「是否加入书架」。
+    -- ⚠️ 必须在清状态**之前**调用：它要用 getCurrentBook() 取书号与书名。
+    -- ⚠️ 本钩子切章时也会走到，切章不算「离开」—— 过滤逻辑在函数内部
+    --    （延后一拍看 ReaderUI.instance 是否还在），见那里的注释。
+    -- ⚠️ 包 pcall：这是关文档路径，弹窗/查询出任何错都不能连累进度收尾。
+    local ok_prompt, err_prompt = pcall(function() self:_promptAddShelfOnLeave() end)
+    if not ok_prompt and Log and Log.error then
+        Log.error("add-shelf prompt failed:", tostring(err_prompt))
+    end
     _state.current_document_path = nil
     _state.setTocMenuOpen(false)
     _state.pre_download_triggered = false

@@ -39,6 +39,13 @@ local M = {
     -- 下载管理状态
     download_task = nil,  -- 当前下载任务 { book_id, book_title, current, total, status, start_time }
     download_history = {}, -- 最近完成的下载任务
+    -- 书架状态快照（见下方 setShelfAll / markShelf / shelfState）。
+    --   shelf_all   ：完整书架集合（由书架列表的载入/保存处重建）；nil = 还不知道
+    --   shelf_known ：单本覆盖（刚加入/移出成功、或一次 shelf_check 的结果）
+    shelf_all = nil,
+    shelf_known = {},
+    -- 「退出阅读时已问过是否加入书架」的书号集合（进程内节流，见 main.lua）
+    shelf_prompted = {},
 }
 
 -- 将段评开关从 Settings 加载到全局内存状态（启动时调用一次）
@@ -163,6 +170,76 @@ M.item_id_from_path = function(path)
     local id = path:match("/chapter_([^/]+)%.html$")
     if id == nil or id == "" then return nil end
     return id
+end
+
+-- ------------------------------------------------------------------ 书架状态快照
+--
+-- 🔴 为什么需要这层快照，而不是当场查：
+--    有两处必须在 **UI 线程同步** 决定「这本书在不在书架」——
+--      ① 阅读端菜单项的文案（「加入书架」还是「移出书架」）：由
+--         `Menu.getMenuText`（koreader frontend/ui/widget/menu.lua）在每次
+--         `updateItems` 时同步求值；
+--      ② 退出阅读时「是否加入书架」的提示。
+--    而现成的两个来源都同步不了：`Store.shelf_check()` 是网络往返；
+--    `Bookshelf:get_shelf()` 未命中 client 的 5 分钟短缓存时同样是阻塞式发包。
+--    ⇒ 这里维护一份内存快照，由书架数据的既有读写点同步维护，查询是 O(1)。
+--
+-- 两级快照，语义严格区分（混用会直接导致文案反着来）：
+--   · `shelf_all`：**完整**书架集合。nil = 还没读过书架列表 ⇒ 对任何书都只能说
+--     「未知」；非 nil 时「不在表里」才等于确定不在架。
+--   · `shelf_known`：单本**覆盖**。优先级高于 `shelf_all` —— 否则「刚加入的书」
+--     会被一份过期书架表判成不在架（加入书架后缓存会被整体清掉，见 store_ui）。
+
+--- 用一份**完整**书架列表重建快照（bookshelf.lua 的 save / load 处调用）。
+-- @param books table|nil 书架书籍数组；nil = 列表不可用（≠ 空书架），退回未知。
+function M.setShelfAll(books)
+    if type(books) ~= "table" then
+        M.shelf_all = nil
+        return
+    end
+    local set = {}
+    for _, b in ipairs(books) do
+        local id = type(b) == "table" and b.book_id
+        if id ~= nil then
+            set[tostring(id)] = true
+        end
+    end
+    M.shelf_all = set
+end
+
+--- 书架列表失效（加入/移出书架后清缓存）⇒ 完整快照不再可信。
+-- ⚠️ **只清 shelf_all，不动 shelf_known**：后者是「刚操作过」的确定事实，
+--    而 shelf_all 已经过期 —— 一起清会把「刚加入的书」重新变成「未知」。
+function M.clearShelfAll()
+    M.shelf_all = nil
+end
+
+--- 是否已经有一份**完整**书架快照（false = 还没读过书架列表，一切皆「未知」）。
+-- 外部只该通过它 + shelfState 观察快照，别直接读 M.shelf_all：
+-- 那个字段的 nil 有语义（「未知」），字段本身对外是内部实现。
+function M.hasShelfAll()
+    return M.shelf_all ~= nil
+end
+
+--- 记录**单本**书的确定状态（加入/移出成功、或一次 shelf_check 的结果）。
+-- @param book_id string|number
+-- @param on_shelf boolean
+function M.markShelf(book_id, on_shelf)
+    if book_id == nil or type(on_shelf) ~= "boolean" then return end
+    M.shelf_known[tostring(book_id)] = on_shelf
+end
+
+--- 「这本书在不在书架」的同步查询。
+-- @return true=在架 / false=不在架 / nil=**未知**（还没有任何可信来源）
+-- 🔴 调用方必须区分 false 与 nil：只有 false 才敢断言「不在书架」。
+--    把 nil 当 false 会让「还没读过书架列表」的冷启动场景到处误报方向。
+function M.shelfState(book_id)
+    if book_id == nil then return nil end
+    local id = tostring(book_id)
+    local known = M.shelf_known[id]
+    if type(known) == "boolean" then return known end
+    if M.shelf_all ~= nil then return M.shelf_all[id] == true end
+    return nil
 end
 
 -- 待上传进度的磁盘持久化。

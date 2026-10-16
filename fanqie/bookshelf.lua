@@ -9,8 +9,13 @@ local H = require("fanqie.helper")
 local Log = require("fanqie.logger")
 local FanQie = require("fanqie.fanqie")
 local ok_Async, Async = pcall(require, "fanqie.async")
--- 注：排序（settings.shelf.sort_order）已移到显示层 shelf_view.lua，
--- 本模块不再需要 fanqie.state → ok_state/_state 随之移除。
+local State = require("fanqie.state")
+-- 注：排序（settings.shelf.sort_order）已移到显示层 shelf_view.lua，本模块不读排序。
+-- 注：v2.16.0 起本模块**又**需要 fanqie.state 了 —— 只用它的「书架状态快照」
+--     （setShelfAll / clearShelfAll）。阅读端菜单文案（「加入书架」/「移出书架」）
+--     与「退出阅读时是否提示加入书架」都必须在 UI 线程**同步**判断，而这个判断
+--     既不能打 shelf_check（网络），也不能走 get_shelf（未命中短缓存时阻塞发包）
+--     ⇒ 快照必须在书架数据的读写点维护（见 state.lua 的同名小节）。
 -- 注：本模块已不再直接弹 Menu / InfoMessage / InputDialog，也不再读 content 缓存，
 -- 相关 require 随死代码一并移除（那些 UI 由 main.lua 的同名方法负责）。
 
@@ -67,6 +72,9 @@ local function save_shelf_cache(settings, books)
     -- 写内存缓存（浅拷贝：调用方后续的 do_sort/showBookList 会原地修改 books，
     -- 存浅拷贝保持内存缓存的原始顺序不被污染）
     SHELF_MEM_CACHE = shallow_copy_books(books)
+    -- 同步重建「书架状态快照」（阅读端菜单文案 / 退出提示要同步查，见 state.lua）。
+    -- ⚠️ 这一句是**快照的唯一权威写入口**：书架列表拿到了 ⇒ 「不在表里」才等于不在架。
+    State.setShelfAll(books)
     -- 写文件缓存（持久化后备）
     local path = get_shelf_cache_path(settings)
     local lines = { "return {" }
@@ -127,6 +135,8 @@ local function load_shelf_cache(settings)
         Log.info("shelf cache loaded: " .. tostring(#data) .. " books")
         -- 3. 回填内存缓存（存原始引用，调用方拿到的是浅拷贝不会污染 data）
         SHELF_MEM_CACHE = data
+        -- 文件后备同样是一份**完整**书架列表 ⇒ 同步重建快照（冷启动离线也能判方向）
+        State.setShelfAll(data)
         return shallow_copy_books(data)
     end
     if not ok then
@@ -153,6 +163,27 @@ function Bookshelf:clearShelfCache()
     if H.file_exists(path) then
         os.remove(path)
         Log.info("shelf cache file deleted: " .. path)
+    end
+    -- 4. 完整快照跟着失效（「书架列表」这份证据已经没了）。
+    --    ⚠️ 只清 shelf_all：刚加入/移出那本书的确定结论在 shelf_known 里，
+    --       那是本次操作的直接结果，比过期的书架表更可信。
+    if State and State.clearShelfAll then State.clearShelfAll() end
+end
+
+--- 把书架状态快照补到可用（**纯同步**：内存 → 本地文件缓存，绝不联网）。
+--
+-- 🔴 为什么需要它：冷启动续读时用户可能从没打开过书架列表，此时快照是「未知」，
+--    而「未知」不能拿来决定按钮文案的方向、更不能拿来弹「加入书架」的提示。
+--    本方法把「曾经缓存过的书架列表」读回来（一次本地文件读），让绝大多数场景
+--    在**不发网络请求**的前提下就能得到确定答案。
+-- ⚠️ 幂等：已经有完整快照就直接返回。也**不能**退化成 get_shelf —— 那是网络路径，
+--    放在这里会把「同步判断」变成「同步阻塞发包」。
+function Bookshelf:ensureShelfSnapshot()
+    if State.hasShelfAll() then return end
+    if not self.settings then return end
+    local ok, books = pcall(load_shelf_cache, self.settings)
+    if ok and type(books) == "table" then
+        State.setShelfAll(books)
     end
 end
 

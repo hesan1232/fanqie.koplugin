@@ -32,6 +32,7 @@ local Log = require("fanqie.logger")
 local CoverCache = require("fanqie.cover_cache")
 local Store = require("fanqie.store")
 local StoreView = require("fanqie.store_view")
+local State = require("fanqie.state")
 local ok_Async, Async = pcall(require, "fanqie.async")
 
 local UIManager = require("ui/uimanager")
@@ -1604,6 +1605,11 @@ function StoreUI.toggleStoreShelf(self, book, add, on_done)
             return
         end
         invalidate_shelf(plugin)
+        -- 把这次操作的结果写进「书架状态快照」——清缓存只会把**完整快照**作废
+        -- （State.clearShelfAll），但这本书是刚刚亲手操作过的，结论确定无疑。
+        -- 阅读端菜单文案（「加入书架」/「移出书架」）与「退出时是否提示加入书架」
+        -- 都读这份快照，靠的就是这里（见 state.lua 的同名小节）。
+        if State and State.markShelf then State.markShelf(book_id, want_add) end
         plugin:showInfo(want_add and _("已加入书架") or _("已移出书架"))
         if on_done then on_done(true, want_add) end
     end, {
