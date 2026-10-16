@@ -187,6 +187,26 @@ function Bookshelf:ensureShelfSnapshot()
     end
 end
 
+--- 从**本地**书架缓存里找一本书的完整记录（零网络）。
+--
+-- 用途：阅读界面的「书籍信息」在「重启后从最近阅读/文件管理器直接打开章节续读」
+-- 时拿不到 `_state.current_book`（它不持久化），只有从文档路径反推出来的书号。
+-- 这时用本地书架缓存把书名/作者/简介/进度补齐 —— 和 ensureShelfSnapshot 一样
+-- **绝不联网**：网络往返会让菜单卡住，而本地文件（或内存缓存）命中是零成本的。
+-- @return table|nil 命中返回原始记录（调用方只读，不要就地改）
+function Bookshelf:findCachedBook(book_id)
+    if not book_id or not self.settings then return nil end
+    local want = tostring(book_id)
+    local ok, books = pcall(load_shelf_cache, self.settings)
+    if not ok or type(books) ~= "table" then return nil end
+    for _i, b in ipairs(books) do
+        if type(b) == "table" and tostring(b.book_id) == want then
+            return b
+        end
+    end
+    return nil
+end
+
 function Bookshelf:showBookshelf(opts)
     opts = opts or {}
     local force_refresh = opts.force_refresh == true

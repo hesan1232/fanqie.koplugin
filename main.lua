@@ -206,6 +206,8 @@ if not ok_state then
     function _state.clearShelfAll() _state.shelf_all = nil end
     function _state.markShelf() end
     function _state.shelfState() return nil end
+    -- 「到达文档末尾时的操作」原值备份：回退态下同样只是普通字段，不需要额外接口。
+    _state.end_document_action_backup = nil
 end
 
 local function getCurrentChapterIndex()
@@ -240,6 +242,100 @@ function FanQiePlugin:isCurrentDocFanqie()
     local doc_path = self.ui.document.file or self.ui.document.path
     if not doc_path then return false end
     return doc_path:lower():find('/fanqie/', 1, true) ~= nil
+end
+
+--- KOReader 的全局阅读设置对象（不存在时返回 nil）。
+--
+-- `G_reader_settings` 是 KOReader 的全局变量，正常情况下一定存在；但
+-- **回归 harness 里没有它**（也拿不到真对象）。所有用到它的地方都必须
+-- 走这个取用口，缺了就静默降级 —— 否则一个可选能力会把阅读界面拖崩。
+function FanQiePlugin:_readerSettings()
+    local ok, rs = pcall(function() return G_reader_settings end)
+    if ok and rs and type(rs.readSetting) == "function" then
+        return rs
+    end
+    return nil
+end
+
+-- ---------------------------------------------------------------------------
+-- 「到达文档末尾时的操作」：读番茄章节时改成「什么都不做」（v2.17.0）
+-- ---------------------------------------------------------------------------
+-- 背景：番茄小说**一章就是一个 html 文件**（`content.lua` 的
+-- `chapter_<item_id>.html`），在 KOReader 眼里「读完一章」就等于
+-- 「读完一本书」。于是读到最后一页**再往后翻**时（判据在
+-- `readerrolling.lua:914/928`：`diff > 0 and old_page == self.current_page`），
+-- 会派发 `EndOfBook`，而 `ReaderStatus:onEndOfBook` 按**全局设置**
+-- `end_document_action`（默认 `"pop-up"`）弹一个「已到文档末尾」的按钮框。
+-- 那个框和本插件自己的「自动下一章」是两套东西，一起出现就是打扰。
+--
+-- 🔴 为什么是「改设置」而不是「插件抢事件」：
+--    `WidgetContainer:propagateEvent` 是**正序**遍历
+--    （`widgetcontainer.lua:82` `for _, widget in ipairs(self)`，第一个返回 true 的
+--    就把事件截住），而 `ReaderStatus` 在 `readerui.lua:416` 就注册了，插件远在其后
+--    ⇒ KOReader 的那个对话框**永远先于**插件的 `onEndOfBook` 执行。想让它不发生，
+--    只能让 `ReaderStatus` 自己「什么都不做」。
+--
+-- ✅ 为什么选 `"nothing"` 这个值最合适：
+--    `ReaderStatus:onEndOfBook` 的 if/elseif 链里**没有 `"nothing"` 分支**
+--    （`readerstatus.lua:126-166` 只有 pop-up / book_status / next_file /
+--    goto_beginning / file_browser / mark_read / …），所以它什么也不做，
+--    并且**不返回值**（nil）⇒ 事件继续传播 ⇒ 插件的 `onEndOfBook`
+--    （进度置 1.0 + 自动下一章）一切照旧，只是不再有那个框。
+--
+-- 生效范围：**只覆盖打开番茄章节的这段时间**，离开时还原（见各函数的注释）。
+function FanQiePlugin:_muteEndDocumentAction()
+    if not self:isCurrentDocFanqie() then return end
+    local rs = self:_readerSettings()
+    if not rs then return end
+    local cur = rs:readSetting("end_document_action")
+    if _state.end_document_action_backup == nil then
+        -- 只在**第一次**覆盖时记原值：切章会走一遍「还原 → 再覆盖」，
+        -- 若每次都记，第二次记下的就是我们自己写的 "nothing"，原值就丢了。
+        -- ⚠️ 用 `false` 表示「原本没设过」（KOReader 的默认即「弹窗询问」）——
+        --    不能和 nil（= 还没覆盖过）混用，否则永远不会还原。
+        -- 🔴 别写成 `(cur == nil) and false or cur`：Lua 的 `and/or` 在中间值为
+        --    **false** 时会落到最后一个操作数 ⇒ 表达式退化成 `cur`（= nil），
+        --    「原本没设过」又变回「还没覆盖过」，L1b/L5 就是这么红的。
+        if cur == nil then
+            _state.end_document_action_backup = false
+        else
+            _state.end_document_action_backup = cur
+        end
+    end
+    if cur ~= "nothing" then
+        rs:saveSetting("end_document_action", "nothing")
+    end
+end
+
+--- 还原「到达文档末尾时的操作」。没覆盖过时是空转。
+function FanQiePlugin:_restoreEndDocumentAction()
+    local backup = _state.end_document_action_backup
+    if backup == nil then return end
+    _state.end_document_action_backup = nil
+    local rs = self:_readerSettings()
+    if not rs then return end
+    -- ⚠️ 只还原「仍然是我们写的那个值」的情况：用户在阅读番茄小说的过程中
+    --    自己去设置里改过（比如就是想要那个框），那就尊重用户的选择。
+    if rs:readSetting("end_document_action") ~= "nothing" then return end
+    -- 🔴 同样别写成 `backup == false and nil or backup`：中间值是 nil 时整个
+    --    表达式落到最后一项 ⇒ 会把 `false` 写回去（LuaSettings 里就成了一个
+    --    真值为 false 的键，而不是「没设过」）。L5 就是这条。
+    if backup == false then
+        rs:saveSetting("end_document_action", nil)  -- 删键 = 回到 KOReader 默认
+    else
+        rs:saveSetting("end_document_action", backup)
+    end
+end
+
+--- KOReader 每次打开文档都会广播 `ReaderReady`（`readerui.lua:517`），
+--- 这是「文档已就绪」的统一挂载点：插件自己打开章节（showReaderUI）和
+--- 用户从「最近阅读 / 文件管理器」直接打开章节 html 都会经过这里。
+--- ⚠️ 返回 nil（不消费事件）：别把 ReaderReady 从别的模块手里截走。
+function FanQiePlugin:onReaderReady()
+    local ok, err = pcall(function() self:_muteEndDocumentAction() end)
+    if not ok and Log and Log.error then
+        Log.error("mute end_document_action failed:", tostring(err))
+    end
 end
 
 --- 当前正在读的番茄书。
@@ -322,6 +418,7 @@ local BOOKSHELF_MIXIN = {
     "showBookshelf",   -- 书架入口（异步拉取 + 缓存回退 + 后台刷新）
     "get_shelf",       -- 拉取书架列表并归一化（子进程内执行）
     "ensureShelfSnapshot", -- 同步补齐「书架状态快照」（纯本地文件，绝不联网）
+    "findCachedBook",  -- 从本地书架缓存按书号取完整记录（阅读端「书籍信息」补全用）
 }
 if Bookshelf then
     for _, name in ipairs(BOOKSHELF_MIXIN) do
@@ -419,6 +516,16 @@ function FanQiePlugin:addToMainMenu(menu_items)
                         text = _("书城"),
                         callback = self:safeCallback(_("书城"), function()
                             self:showStore()
+                        end),
+                    },
+                    {
+                        -- 阅读界面里「我在读的是什么」的入口（v2.17.0）。
+                        -- 判据与「加入/移出书架」「目录」同源：优先内存里的
+                        -- _state.current_book，没有就从文档路径反推 + 本地书架缓存补全
+                        -- （重启续读场景），全程零网络。详见 showCurrentBookInfo。
+                        text = _("书籍信息"),
+                        callback = self:safeCallback(_("书籍信息"), function()
+                            self:showCurrentBookInfo()
                         end),
                     },
                     {
@@ -2825,6 +2932,44 @@ end
 --   + 阅读进度接口（item_id/index/read_timestamp）
 -- 合并与格式化全在 fanqie/book_detail.lua（纯函数），本文件只负责摆按钮。
 
+--- 阅读界面「书籍信息」：显示**当前正在读的这本番茄书**的详情（v2.17.0）。
+--
+-- 数据的取用按可靠性依次退让，**全程零网络**：
+--   1. `_state.current_book` —— 从书架 / 书城打开时是完整记录；
+--   2. `getCurrentBook()` —— 文档路径反推的书号（重启后从「最近阅读 /
+--      文件管理器」直接打开章节续读时，这是唯一的书号来源）；
+--   3. `findCachedBook()` —— 用**本地**书架缓存（内存缓存或 shelf_cache.lua）
+--      把书名 / 作者 / 简介 / 进度补齐，和 ensureShelfSnapshot 同源，不发包。
+--
+-- 🔴 为什么不在第 3 步之后再去联网查一次详情：这个入口在阅读界面的菜单里，
+--    菜单项的 callback 一旦阻塞在网络往返上，用户看到的就是「点了没反应」。
+--    本地能补多少补多少，补不到就明说。
+function FanQiePlugin:showCurrentBookInfo()
+    local book = _state.current_book
+    if type(book) ~= "table" or not book.book_id then
+        local minimal = self:getCurrentBook()
+        book = minimal
+        if type(minimal) == "table" and minimal.book_id
+            and type(self.findCachedBook) == "function" then
+            local ok, found = pcall(self.findCachedBook, self, minimal.book_id)
+            if ok and type(found) == "table" then
+                book = found
+            end
+        end
+    end
+    if type(book) ~= "table" or not book.book_id then
+        self:showInfo(_("无法确定当前书籍"))
+        return
+    end
+    if not (book.title or book.book_name) then
+        -- 本地也补不到（首次打开、书架缓存还没落盘）：把书号说出来，
+        -- 好过弹一句干巴巴的「暂无书籍信息」。
+        self:showInfo(T(_("暂无书籍信息（书号 %1）"), tostring(book.book_id)))
+        return
+    end
+    self:showBookDetailPage(book, {})
+end
+
 --- 关闭「书籍详情」整页（唯一入口，避免连点叠两页）。
 function FanQiePlugin:closeBookDetailPage()
     local page = self._book_detail_page
@@ -4422,6 +4567,18 @@ function FanQiePlugin:_stopProgressTimer()
 end
 
 function FanQiePlugin:onCloseDocument()
+    -- 🔴 必须放在最前面：这不依赖「当前文档是不是番茄的」——
+    --    只要覆盖过（`_state.end_document_action_backup ~= nil`）就要还回去，
+    --    否则「到达文档末尾时的操作」会被永久改成 nothing（影响用户读别的书）。
+    --    下面那个 `isCurrentDocFanqie` 守卫在文档已经不在时可能为假，
+    --    所以还原不能写在守卫后面。
+    --    本钩子切章时也会走 —— 那次还原之后，新文档的 ReaderReady 会立刻重新覆盖
+    --    （showReader 的 doShowReader 在同一同步块里 onClose + new + show），
+    --    中间窗口内不会有翻页发生，所以不会漏挡。
+    local ok_restore, err_restore = pcall(function() self:_restoreEndDocumentAction() end)
+    if not ok_restore and Log and Log.error then
+        Log.error("restore end_document_action failed:", tostring(err_restore))
+    end
     if not self:isCurrentDocFanqie() then
         return
     end

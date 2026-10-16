@@ -46,6 +46,14 @@ local M = {
     shelf_known = {},
     -- 「退出阅读时已问过是否加入书架」的书号集合（进程内节流，见 main.lua）
     shelf_prompted = {},
+    -- 「到达文档末尾时的操作」原值备份（见 main.lua 的 _mute/_restoreEndDocumentAction）。
+    -- 🔴 三态必须分清：
+    --   nil   = 还没覆盖过（不需要还原）
+    --   false = 覆盖前该项**没设过**（KOReader 的默认就是「弹窗询问」）
+    --   其它  = 覆盖前的实际值（字符串）
+    --    把 false 和 nil 混用 ⇒ 「原本没设过」会被当成「没覆盖过」，
+    --    离开番茄书时就不还原，全局设置被永久改成 nothing。
+    end_document_action_backup = nil,
 }
 
 -- 将段评开关从 Settings 加载到全局内存状态（启动时调用一次）
