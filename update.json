@@ -1,16 +1,16 @@
 {
-  "version": "2.16.1",
-  "name": "番茄小说 2.16.1",
+  "version": "2.16.2",
+  "name": "番茄小说 2.16.2",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.1/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.2/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.1/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.1/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.1/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.1/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.2/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.2/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.2/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.2/fanqie.koplugin.zip"
   ],
-  "size": 375762,
-  "sha256": "b99cf374ef0dd37cbc5596ca4ed34d5d430c0ca0f177e83413aab170619542a0",
-  "notes": "**修「批量下载图集『获取章节正文』一直 0%、很久之后弹 (失败 N 章)」：图片失败也写心跳（不再被误判成停滞）+ 进度框显示章内页数与剩余时间 + 完成提示直接给出失败原因；图片整体失败不再静默落盘坏章节**\n\n- **修**：**图集批量下载「一直 0%，很久之后 (失败 N 章)」** —— 根因是**心跳只在图片下载\n  「成功」之后才写**：图片服务器一旦不可达或很慢（每张都要等满 15s 的 socket 超时），\n  子进程就**一次心跳都没有**，父进程把「一直在失败」读成「停滞」，90 秒到点把整章掐掉，\n  于是**每一章都这样**。现在**每次图片尝试（成功、失败都算）都写心跳**，进度框显示\n  「第 N/M 页（失败 K）」和**本章剩余时间**，进度条也按**章内比例**走（不再等整章下完\n  才动一格）；图集单章的停滞上限由 90s 放宽到 180s（真卡死照样掐）。\n- **修**：**图片整体失败时不再静默存一份坏章节** —— 以前图片下载异常被 `pcall` 吞掉，\n  照旧落盘一份「全是远程 URL 的 HTML」，用户看到「下载成功」、打开却是一片空白/裂图。\n  现在：连续 8 张失败且 0 张成功 ⇒ 立刻中断本章（不白等 3~12 分钟）；本章远程图 ≥5 张\n  且一张都没下下来 ⇒ 本章判失败；漫画（`book_type=1`）**半章以上**图片失败也判失败。"
+  "size": 377999,
+  "sha256": "58f5bb6528c997971a25dd650283fa4bc8d546d4ffd6e3abaa9aee8a57178d37",
+  "notes": "**修「明明已登录，书城搜索却提示『请先登录番茄账号（书城部分接口需要 Cookie）』」：0 字节响应不再一律当成没登录**\n\n- **修**：**已登录状态下书城搜索被要求登录**。根因是「HTTP 200 + 0 字节」有**两个**成因，\n  而旧代码只看「0 字节」就断定需要登录：\n  ① 请求**没带 Cookie** → 确实该登录；\n  ② **带了 Cookie 但被限流** → 该重试，**不该**让用户去重新登录。\n  实测确认过这条误判：书架能正常加载（登录态有效、Cookie 非空），搜索却弹「请先登录」。\n  现在客户端会把「**本次请求是否带上 Cookie 头**」作为**事实**随错误一起上报，\n  搜索只在**确认没带 Cookie**时才提示登录；带了 Cookie 的 0 字节如实报\n  「书城接口返回空响应（多为被限流，请稍后重试）」。\n- **修**：**部分接口未登录时回的是 `{\"code\":-1,\"message\":\"请先登录\"}`**（不是 101108），\n  旧代码会把它归成普通业务错误，于是用户看到的是"
 }

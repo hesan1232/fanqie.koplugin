@@ -464,22 +464,42 @@ end
 -- 返回 (data, err)：成功 err=nil；失败 data=nil，err 是**表**
 --   { kind = "empty"|"not_json"|"http"|"auth", message = "...", code = n }
 -- 表形式的 err 让上层能按 kind 给不同提示，而不用去 match 字符串。
+--
+-- 🔴 `had_cookie`（v2.16.2）：本次请求**是否带上了 Cookie 头**。
+--    「HTTP 200 + 0 字节」有**两个完全不同的成因**，而两者的处置相反：
+--      ① 请求没带 Cookie ⇒ 该接口要登录（引导用户登录）
+--      ② 带了 Cookie 仍是 0 字节 ⇒ 被限流（让用户重试，**别让他去重新登录**）
+--    光看「0 字节」无法区分，所以把「有没有带 Cookie」这个事实带出来，交给上层决策。
+--    实测（2026-10-16）：搜索接口**只要请求里带 Cookie 头就给数据**，
+--    连值都换成假 sessionid 也照样返回 —— 它根本不校验登录态，只看有没有这个头。
+--    另：限流形态也确实是「HTTP 200 + 0 字节」（不是 429），所以二者同形。
 
-local function web_finish(client, text, code, resp_headers, method, url)
+local function web_finish(client, text, code, resp_headers, method, url, had_cookie)
     persist_cookies(client, resp_headers)
     if not code or code < 200 or code >= 300 then
         local err = {
             kind = is_auth_error(client, code, text, resp_headers) and "auth" or "http",
             message = http_error(client, code, text, resp_headers),
             code = code,
+            had_cookie = had_cookie and true or false,
         }
         return nil, err
     end
     if text == nil or #text == 0 then
+        local msg = string.format("%s %s => HTTP 200 但响应 0 字节（%s）",
+            method, url,
+            had_cookie and "已带 Cookie，多为被限流" or "本次未带 Cookie，该接口可能需要登录")
+        -- 🔴 记一条日志：这两种成因**处置相反**（一个该登录、一个该重试），
+        --    而界面上只显示一句提示、事后分不出来。用户报障时靠这条日志定性
+        --    —— 本轮排查卡住就是因为没有它（只能反复猜「到底是限流还是没登录」）。
+        local ok_log, logger_mod = pcall(require, "fanqie.logger")
+        if ok_log and logger_mod and logger_mod.warn then
+            logger_mod.warn("[FanQie][client] " .. msg)
+        end
         return nil, {
             kind = "empty",
-            message = string.format("%s %s => HTTP 200 但响应 0 字节（被限流或路径失效）",
-                method, url),
+            had_cookie = had_cookie and true or false,
+            message = msg,
             code = code,
         }
     end
@@ -521,7 +541,7 @@ function Client:web_get_json(url, opts)
     if not ok then
         return nil, { kind = "transport", message = tostring(text), code = 0 }
     end
-    return web_finish(self, text, code, resp_headers, "GET", url)
+    return web_finish(self, text, code, resp_headers, "GET", url, cookie_header ~= "")
 end
 
 --- App（api*.fqnovel.com）GET（不抛异常）。
@@ -550,7 +570,8 @@ function Client:app_get_json(url, opts)
     if not ok then
         return nil, { kind = "transport", message = tostring(text), code = 0 }
     end
-    return web_finish(self, text, code, resp_headers, "GET", url)
+    -- App 域请求**不带** Cookie（见本函数上方的说明）⇒ had_cookie = false。
+    return web_finish(self, text, code, resp_headers, "GET", url, false)
 end
 
 --- 书城 POST（不抛异常）。opts: { referer = "…", headers = {…}, raw_body = string }
@@ -581,7 +602,7 @@ function Client:web_post_json(url, data, opts)
     if not ok then
         return nil, { kind = "transport", message = tostring(text), code = 0 }
     end
-    return web_finish(self, text, code, resp_headers, "POST", url)
+    return web_finish(self, text, code, resp_headers, "POST", url, cookie_header ~= "")
 end
 
 function Client:fetch_shelf_info()

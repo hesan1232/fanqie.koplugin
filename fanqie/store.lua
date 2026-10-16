@@ -203,7 +203,14 @@ end
 local function api_error(data, url)
     local code = tonumber(data and data.code)
     local msg = data and (data.message or data.msg) or nil
-    if code == CODE_NOT_LOGGED_IN then
+    local smsg = tostring(msg or "")
+    -- 🔴 除 101108 外，还要认「**文案里说登录**」这一种（v2.16.2）：
+    --    部分接口未登录时回的是 `{"code":-1,"message":"请先登录"}`（不是 101108），
+    --    旧代码会把它归成 kind="api"，于是用户看到的是
+    --    「书城接口返回业务错误 code=-1 message=请先登录（URL）」这种**原始报文**，
+    --    既难懂又没告诉他该干什么。client.lua 的 is_auth_error 早就有同款文案识别，
+    --    这里补齐，让「需要登录」统一走一条可操作提示。
+    if code == CODE_NOT_LOGGED_IN or smsg:find("登录", 1, true) then
         return {
             kind = "auth",
             code = code,
@@ -504,8 +511,12 @@ function Store.search(client, keyword, opts)
     local url = FanQie.store_search_url(keyword, opts)
     local data, err = client:web_get_json(url, { referer = search_referer(keyword) })
     if not data then
-        -- 无 cookie 时这里回的就是 0 字节，把 empty 提升成更准确的「需要登录」
-        if err and err.kind == "empty" then
+        -- 🔴 「0 字节」有**两个成因**（v2.16.2 修）：没带 Cookie（该登录）／带了 Cookie 却被限流。
+        --    只看「0 字节」就断言「需要登录」，会把**已经登录**的用户骗去重新登录 ——
+        --    实测确认过这条误判路径：书架能正常加载（说明 token 有效、Cookie 非空），
+        --    而搜索却弹「请先登录番茄账号（书城部分接口需要 Cookie）」。
+        --    ⇒ **只在确认本次请求没带 Cookie 时**才提升为 auth；带了 Cookie 就如实报限流。
+        if err and err.kind == "empty" and err.had_cookie ~= true then
             return nil, {
                 kind = "auth",
                 message = T(_("搜索接口需要登录番茄账号（无 Cookie 时该接口返回空响应）：%1"), url),
