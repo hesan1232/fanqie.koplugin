@@ -262,7 +262,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.10",
+    version = Info and Info.version or "2.16.11",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -1035,19 +1035,24 @@ local function append_comment_lines(number, comment, expanded)
     local user = tostring(comment.user_name or comment.username or _("匿名"))
     local likes = tonumber(comment.digg_count or comment.like_count) or 0
     local replies = tonumber(comment.reply_count) or 0
-    local head = T(_("%1. %2%3 (赞%4 回复%5)"), number,
-        user, comment_titles_text(comment), likes, replies)
-    local ts = fmt_comment_time(comment.create_time)
-    if ts ~= "" then
-        head = head .. "  " .. ts
-    end
-    -- v2.16.8 起头行不再追加折叠标记（与 CommentView 主路径同口径）：
-    -- 回复数已经在「回复N」里，这条的展开/收起靠下方「N 展开…/N 收起」按钮。
+    -- v2.16.11 与 CommentView 主路径同口径：头行只留「序号. 用户名」，
+    -- 日期/赞/回复数 + 折叠标记挪到正文下面的统计行。
+    local head = T(_("%1. %2%3"), number,
+        user, comment_titles_text(comment))
     local out = { head }
     local body = tostring(comment.text or "")
     if body ~= "" then
         out[#out + 1] = body
     end
+    local ts = fmt_comment_time(comment.create_time)
+    local foot = T(_("赞%1 · 回复%2"), tostring(likes), tostring(replies))
+    if ts ~= "" then foot = foot .. "  " .. ts end
+    if expanded then
+        foot = foot .. _("   ［收起］")
+    elseif replies > 0 then
+        foot = foot .. T(_("   ［展开 %1 条回复］"), tostring(replies))
+    end
+    out[#out + 1] = foot
     local note = comment_image_note(comment_images(comment))
     if note then
         out[#out + 1] = note
@@ -1055,6 +1060,8 @@ local function append_comment_lines(number, comment, expanded)
     if expanded then
         if expanded.roots and #expanded.roots > 0 then
             append_reply_lines(expanded.roots, out)
+        else
+            out[#out + 1] = _("（回复内容解析为空）")
         end
         if expanded.has_more then
             out[#out + 1] = REPLY_INDENT .. _("… 还有更多回复，点下方「⋯」继续加载")
@@ -1549,12 +1556,22 @@ function FanQiePlugin:_renderParaReviewView(in_place)
         local user = tostring(comment.user_name or comment.username or _("匿名"))
         local likes = tonumber(comment.digg_count or comment.like_count) or 0
         local replies = tonumber(comment.reply_count) or 0
-        local head = T(_("%1. %2%3 · 赞%4 · 回复%5"), tostring(i),
-            user, comment_titles_text(comment), likes, replies)
+        -- v2.16.11 头行瘦身：只留「序号. 用户名+头衔」——日期/赞/回复数太挤
+        --（用户报「第一行东西太多」），全部挪到**正文下面**的统计行 foot。
+        local head = T(_("%1. %2%3"), tostring(i),
+            user, comment_titles_text(comment))
+        -- 统计行（comment_view 渲染成灰字小号，紧跟在正文/图片之后）：
+        --   赞N · 回复N  时间   ［展开 N 条回复］/［收起］
+        -- v2.16.8 删过头行折叠标记，结果可发现性归零（用户找不到了）——
+        -- 本版随统计行一起恢复：标记写在这行尾，点整行（含标记）即可展开/收起。
         local ts = fmt_comment_time(comment.create_time)
-        if ts ~= "" then head = head .. "  " .. ts end
-        -- v2.16.8 起头行不再追加「［展开 N 条回复］/［收起］」标记：回复数已经在
-        -- 「回复N」里（可发现性靠它），展开/收起仍靠点头行（TapRow 不变）。
+        local foot = T(_("赞%1 · 回复%2"), tostring(likes), tostring(replies))
+        if ts ~= "" then foot = foot .. "  " .. ts end
+        if expanded then
+            foot = foot .. _("   ［收起］")
+        elseif replies > 0 then
+            foot = foot .. T(_("   ［展开 %1 条回复］"), tostring(replies))
+        end
 
         local imgs, missing = view_image_entries(self, comment, i, true)
         for _k, m in ipairs(missing) do all_missing[#all_missing + 1] = m end
@@ -1565,6 +1582,22 @@ function FanQiePlugin:_renderParaReviewView(in_place)
             for _k, m in ipairs(reply_missing or {}) do all_missing[#all_missing + 1] = m end
             if expanded.has_more then
                 more = math.max(1, (expanded.total or 0) - #(expanded.roots or {}))
+            end
+            -- v2.16.11 诊断（用户报「展开后二级回复空白」且设备日志零报错——
+            -- 合并 flat=3 成功、无闸门 WARN、无 error ⇒ 嫌疑只剩渲染侧）：
+            --   · roots=0     → build_reply_tree 把条全丢了（reply_id 缺失/畸形）
+            --   · blocks=0 但 roots>0 → build_reply_blocks 丢了
+            -- 两种都不许静默空白：落 WARN 留证据 + 渲染一行灰字说明。
+            if rc == nil or #rc == 0 then
+                local flat_n = #(cache_replies[cid] and cache_replies[cid].flat or {})
+                if Log then
+                    Log.warn("[段评] 展开后零回复块: cid=" .. tostring(cid)
+                        .. " roots=" .. #(expanded.roots or {})
+                        .. " flat=" .. tostring(flat_n)
+                        .. " total=" .. tostring(expanded.total))
+                end
+                rc = { { head = _("（回复内容解析为空 —— 请把 fanqie.log 里「展开后零回复块」这行发给开发者）"),
+                        text = "", images = {} } }
             end
         end
 
@@ -1584,6 +1617,7 @@ function FanQiePlugin:_renderParaReviewView(in_place)
         view_comments[#view_comments + 1] = {
             no = i,
             head = head,
+            foot = foot,
             text = tostring(comment.text or ""),
             images = imgs,
             replies = rc,

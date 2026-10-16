@@ -32,7 +32,8 @@
 data 结构（main.lua 组装，见 _renderParaReviewView）：
   comments = {
     {
-      head  = "1. 名字 · 赞 3 · 回复 5",   -- 头行（加粗；v2.16.8 起无折叠标记）
+      head  = "1. 名字",                       -- 头行（加粗；v2.16.11 只留序号+用户名）
+      foot  = "赞 3 · 回复 5   ［展开 5 条回复］", -- 统计行（灰字小号，正文下方；含折叠标记）
       text  = "正文……",
       images = { { path = "/…/c_xx_1.webp", w = 240, h = 240,    -- 已下载
                    img_no = 1, tap = { no = 1, img = 1 } },
@@ -312,6 +313,26 @@ function CommentView:_append_block(group, block, content_w, indent)
             -- 「正在后台加载…」也可点（im.tap 只在可显示的图上才有）；
             -- 「本设备无法显示」不带 tap ⇒ 不可点。
             inner[#inner + 1] = self:_wrap_tappable(note, im.tap, self.on_image_tap)
+        end
+    end
+
+    -- 统计行（v2.16.11）：「赞N · 回复N  时间 ［展开 N 条回复］/［收起］」
+    -- 灰字小号，跟在正文/图片之后 —— 用户报头行太挤（日期/赞/回复数全塞第一行）；
+    -- 折叠标记也在这行尾（v2.16.8 删过头行标记后可发现性归零）。
+    -- 与「头行+正文」同一个 tap 载荷：点整行（含标记）就能展开/收起。
+    if type(block.foot) == "string" and block.foot ~= "" then
+        local foot = TextBoxWidget:new{
+            text = block.foot,
+            face = Font:getFace("xx_smallinfofont", FONT_NOTE),
+            width = text_w,
+            alignment = "left",
+            fgcolor = Blitbuffer.COLOR_DARK_GRAY,
+        }
+        inner[#inner + 1] = VerticalSpan:new{ width = Screen:scaleBySize(3) }
+        if block.tap ~= nil and self.on_block_tap ~= nil then
+            inner[#inner + 1] = self:_wrap_tappable(foot, block.tap, self.on_block_tap)
+        else
+            inner[#inner + 1] = foot
         end
     end
 

@@ -1,16 +1,16 @@
 {
-  "version": "2.16.10",
-  "name": "番茄小说 2.16.10",
+  "version": "2.16.11",
+  "name": "番茄小说 2.16.11",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.10/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.11/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.10/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.10/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.10/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.10/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.11/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.11/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.11/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.11/fanqie.koplugin.zip"
   ],
-  "size": 397644,
-  "sha256": "24391ca37459b1ab26395c071073aef6d918dc13abedc116e6c58072dcb703ff",
-  "notes": "**点图直达全屏查看器：去掉「居中圆角弹窗壳」**\n\n- v2.16.9 去掉了「段评图片 N/M」标题栏，但 `ImageViewer` 不传 `fullscreen=true`\n  时仍是**居中、圆角、四周留边**的浮动对话框——看起来还是隔了一层弹窗。\n- 现在补上 `fullscreen = true`：点图（或点「正在后台加载…」行）**直接覆盖整屏**\n  显示，与 KOReader 自身「长按图片查看」完全同款；**原尺寸 / 旋转 / 关闭**\n  按钮点一下屏幕呼出，行为不变。"
+  "size": 399090,
+  "sha256": "d32d25ce43c7887b9e3bebfff85de5c3a4e932832f74e18a7726bdb2639ef1da",
+  "notes": "**评论头行瘦身 + 恢复「展开 N 条回复 / 收起」标记**\n\n- **头行只留「序号. 用户名（头衔）」**：日期、点赞数、回复数太挤\n  （用户报「第一行东西太多」），全部挪到**正文下面的统计行**\n  （灰字小号）：`赞N · 回复N  时间`。\n- **折叠标记恢复**：v2.16.8 删过头行标记后可发现性归零（找不到怎么展开了）——\n  本版随统计行一起恢复：统计行尾直接写 **`［展开 N 条回复］`**，展开后变\n  **`［收起］`**；**点统计行整行**（含标记）即可展开/收起，点头行/正文也照旧。\n- **排查「展开后二级回复空白」**：设备日志证实回复已拉到并合并成功（flat=3）\n  且零报错，嫌疑只剩渲染侧——渲染时若一条回复块都没构建出来，**不再静默空白**：\n  落 WARN 日志（「展开后零回复块」）+ 显示一行灰字说明。请把日志这行发给开发者。\n- TextViewer 回退路径（低内存兜底）同口径处理。"
 }
