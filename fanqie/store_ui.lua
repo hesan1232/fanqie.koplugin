@@ -108,11 +108,20 @@ local function fetch_page(client, state, page_index)
             out.err = e
         end
     elseif state.kind == "search" then
+        -- Store.search 内部**网页接口优先、失败自动降到免签名端点**（见 store.lua 的长注释）：
+        -- 免登录端点对「缺 s_v_web_id / 没登录 / 被限流」不敏感 ⇒ 只扫码登录的用户也能搜。
         local r, e = Store.search(client, state.keyword, { page_index = page_index, page_count = 10 })
         if r then
             out.ok, out.books, out.total = true, r.books, r.total
-            -- 搜索接口没有 has_more；拿满一页就当还有
-            out.has_more = #r.books >= 10
+            -- 免登录端点有真 has_more（真分页，实测 offset 0/10/20 无交集）；
+            -- 网页接口没有这个字段，沿用「拿满一页就当还有」的旧判据。
+            if r.has_more ~= nil then
+                out.has_more = r.has_more == true
+            else
+                out.has_more = #r.books >= 10
+            end
+            -- lite = 本次结果来自免登录端点（字段少：没有字数 / 在读 / 最新章）
+            out.lite = r.lite == true
         else
             out.err = e
         end
@@ -487,6 +496,16 @@ local function apply_fetch_result(plugin, menu, req, page_index, append, res)
     state.page_index = page_index
     state.has_more = res.has_more == true
     state.total = tonumber(res.total) or state.total or 0
+    if res.lite then
+        -- 免登录端点不给总数：别把上一轮（网页接口）的「共 N 本」留在标题里
+        if res.total == nil then state.total = 0 end
+        -- 降级只提示一次：用户该知道「为什么这几本没有字数 / 在读」，
+        -- 但每翻一页弹一次就是骚扰（state 每次进书城重建，翻页不重建）。
+        if not state.lite_notified then
+            state.lite_notified = true
+            plugin:showInfo(_("已自动改用免登录搜索（网页搜索需要浏览器风控标识），结果不含字数 / 在读"))
+        end
+    end
     -- 原创榜：把服务端解析出的榜单版本记下来，下一页带回去（见 state.rank_version）
     if res.version ~= nil and res.version ~= "" then state.rank_version = res.version end
     -- App 榜单：把服务端给的「排行依据」（如「根据番茄评分排行」）挂到副标题

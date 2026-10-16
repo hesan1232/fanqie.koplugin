@@ -183,6 +183,59 @@ function FanQie.store_search_url(keyword, opts)
     return FanQie.BASE_URL .. "/api/author/search/search_book/v1?" .. table.concat(parts, "&")
 end
 
+-- ===========================================================================
+-- 免登录搜索（头条系小说搜索端点 novel.snssdk.com）
+-- ===========================================================================
+-- 🔴 为什么需要它：网页搜索 `store_search_url` 真正要的是**风控标识 `s_v_web_id`**，
+--    而不是登录态。该标识由浏览器安全 SDK **本地随机生成**（番茄首页挂的
+--    `…/sec_sdk_build/3.8.0/captcha/index.js` 里写得很清楚：
+--      ALPHA = "0123456789A-Za-z"; n = Date.now().toString(36);
+--      r = 36 位随机（r[8]=r[13]=r[18]=r[23]="_"、r[14]="4"、r[19]∈{8,9,A,B}）
+--      cookie 里写 "verify_" + n + "_" + r，有效期 60 天）
+--    而**扫码登录链路任何一步都不下发它**（登录页 / get_qrcode / check_qrconnect /
+--    首页 / 搜索页 / 书库，2026-10-16 逐跳实测 Set-Cookie 只有 passport_csrf_token）；
+--    服务端又只认「它见过的那一串」——
+--    实测：真值改 1 个字符 / 只换时间戳段 / 尾部补 1 字符 → **全部空响应**；
+--          按上面算法严格自造 3 个值 → 全部空响应（同一时刻真值/哨兵正常 ⇒ 不是限流）；
+--          把自造值先带去首页、带去埋点上报走一趟 → 再搜仍空。
+--    ⇒ 没在**浏览器**里打开过番茄的机器，永远拿不到可用的 `s_v_web_id`。
+--
+--    所以搜索改走这个端点：只要 aid / offset / q 三个参数，
+--    **免签名、免 cookie、免风控标识**，扫码登录（或干脆不登录）都能搜。
+--
+-- 🔴 实测（2026-10-16）：
+--   · novel.snssdk.com 与备用域名 api-lf.fanqiesdk.com 返回**逐字节相同**的响应；
+--   · **真分页**：offset=0/10/20 三页两两无交集，响应给 `data.offset` 作下一页偏移；
+--   · `tab_type` / `device_platform` / `parent_enterfrom` / `page_count` / `limit` /
+--     `search_type` / `filter` / `query_type` / `genre` / `category_id` / `sort` …
+--     **一律无效**（响应字节数完全一致）⇒ 没有筛选能力，别做筛选 UI；
+--   · 返回字段：book_id / title / author / abstract / category / creation_status /
+--     genre / score / thumb_url / audio_thumb_uri，**没有** word_count / read_count /
+--     最新章 / 总章数（这些位在 UI 上就是不显示，别伪造）；
+--   · 封面：原 `thumb_url`（p6-tt.bytecdn.cn，带 ~tplv-shrink:640:0）直下 **403**，
+--     但路径抠出来后按 `FanQie.mobile_cover` 归一化到 p6-novel.byteimg.com
+--     实测 **200 image/png** ⇒ 照常用 mobile_cover；
+--   · 搜到的 book_id **可直接用于番茄侧的目录接口**
+--     （/api/reader/directory/detail 实测拿到 85 / 73 章）⇒ 搜完就能读。
+FanQie.SEARCH_LITE_BASE = "https://novel.snssdk.com"
+FanQie.SEARCH_LITE_FALLBACK_BASE = "https://api-lf.fanqiesdk.com"
+FanQie.SEARCH_LITE_PAGE_SIZE = 10
+
+--- 免登录搜索 URL。offset 从 **0** 起（= page_index * SEARCH_LITE_PAGE_SIZE）。
+---@param keyword string
+---@param opts table|nil { page_index=0, offset=nil }
+function FanQie.search_lite_url(keyword, opts)
+    opts = opts or {}
+    local offset = opts.offset
+    if offset == nil then
+        local page_index = tonumber(opts.page_index) or 0
+        offset = page_index * FanQie.SEARCH_LITE_PAGE_SIZE
+    end
+    return FanQie.SEARCH_LITE_BASE .. "/api/novel/channel/homepage/search/search/v1/"
+        .. "?aid=1967&offset=" .. tostring(offset)
+        .. "&q=" .. H.url_encode(keyword or "")
+end
+
 -- 推荐榜（明文无 PUA）。rank_list_type 1~10 实测返回同一批。
 function FanQie.store_rank_recommend_url(opts)
     opts = opts or {}

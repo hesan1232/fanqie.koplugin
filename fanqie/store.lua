@@ -317,6 +317,23 @@ function Store.normalize(rec, source)
         book.creation_status = tonumber(rec.creation_status)
         book.last_chapter_title = rec.last_chapter_title
         book.first_chapter_id = rec.first_chapter_id and tostring(rec.first_chapter_id) or nil
+    elseif source == "search_lite" then
+        -- 免登录搜索（novel.snssdk.com，见 fanqie.lua 的 SEARCH_LITE_BASE 长注释）。
+        -- 字段 snake_case 且**全是明文**（title/author/abstract 都不混淆）⇒ 不过 PUA 解码：
+        -- 这不是「省一步」，而是正确性要求 —— 该接口的文本不在任何 PUA 表里，
+        -- 硬套 plain() 只会平白多一层风险。
+        -- ⚠️ 该接口**不返回** word_count / read_count / 最新章 / 总章数：
+        --    对应字段保持 nil，UI 自然不显示（别用 0 或 "" 伪造，那会显示成「0人在读」）。
+        book.title = rec.title or ""
+        book.author = rec.author or ""
+        book.desc = rec.abstract or ""
+        book.category = rec.category
+        -- 封面：原 thumb_url 直下 403，但作为 `mobile_cover` 的输入恰好合适
+        -- （它只抠 novel-pic 路径，再拼无签名的 p6-novel CDN，实测 200 image/png）。
+        book.cover = FanQie.mobile_cover(rec.thumb_url) or FanQie.mobile_cover(rec.audio_thumb_uri)
+        -- creation_status 语义与网页侧一致（0=完结 / 1=连载），可直接进 creation_status_label。
+        book.creation_status = tonumber(rec.creation_status)
+        book.score = tonumber(rec.score)
     elseif source == "rank_recommend" then
         book.title = rec.bookName or ""
         book.author = rec.author or ""
@@ -499,43 +516,22 @@ end
 
 -- ------------------------------------------------------------------ 搜索
 
---- 搜索书籍。🔴 该接口真正要的是**风控标识 `s_v_web_id`**，不是登录态：
---- 实测（2026-10-16 二分）只带 `s_v_web_id` 就正常，只带 `sessionid` / `ttwid` 都回 0 字节；
---- 伪造的 `s_v_web_id` 同样 0 字节（服务端只认自己认可的值）。
----@param keyword string
----@param opts table|nil { page_index=0, page_count=10 }
----@return table|nil { books = {…}, total = number }, table|nil err
-function Store.search(client, keyword, opts)
-    opts = opts or {}
-    if type(keyword) ~= "string" or keyword == "" then
-        return nil, { kind = "arg", message = _("请输入搜索关键词") }
-    end
-    local url = FanQie.store_search_url(keyword, opts)
+--- 网页搜索（/api/author/search/search_book/v1）。🔴 它真正要的是**风控标识 `s_v_web_id`**，
+--- 不是登录态：实测（2026-10-16 二分）只带 `s_v_web_id` 就正常，只带 `sessionid` / `ttwid`
+--- 都回 0 字节；而**自造 / 改字符 / 换时间戳的 `s_v_web_id` 一律 0 字节**
+--- （服务端只认它见过的那串，逐项实测见 fanqie.lua 的 SEARCH_LITE_BASE 注释）。
+--- ⚠️ 它已**不是**搜索的唯一来源：本文件 `Store.search` 在它失败时会自动降到
+--- `Store.search_lite`（免签名端点）。保留它是因为它有更全的字段（字数 / 在读 / 最新章）。
+---@param url string 由调用方算好传进来（`Store.search` 也要用同一个 url 做错误文案）
+---@return table|nil, table|nil
+local function search_web(client, keyword, opts, url)
     local data, err = client:web_get_json(url, { referer = search_referer(keyword) })
     if not data then
-        -- 🔴 「0 字节」有**三个成因**（v2.16.2 分清前两个，v2.16.3 补第三个）：
-        --   ① 没带 Cookie                ⇒ 该登录
-        --   ② 带了 Cookie 但缺 s_v_web_id ⇒ 该补风控标识（**重新登录也拿不到它**，见下）
-        --   ③ 带了 Cookie 且有 s_v_web_id ⇒ 多为频率限流，该重试
-        -- 只按「有没有 Cookie」二分是不够的：缺 `s_v_web_id` 的用户（典型是刚扫码登录过的）
-        -- 会被引导去**重复登录**，而扫码链路本来就不下发 `s_v_web_id`
-        -- （登录页 / get_qrcode / 首页 / 搜索页 / 书库全部实测不下发）⇒ 怎么登都没用。
-        -- 所以这里必须把「缺风控标识」单独成一类，并给出真正可行的处置（config 兜底 Cookie）。
-        if err and err.kind == "empty" then
-            if err.had_cookie ~= true then
-                return nil, {
-                    kind = "auth",
-                    message = T(_("搜索接口需要登录番茄账号（无 Cookie 时该接口返回空响应）：%1"), url),
-                }
-            elseif err.has_sv_web_id ~= true then
-                return nil, {
-                    kind = "risk",
-                    message = T(_("搜索接口需要风控标识 s_v_web_id（当前 Cookie 里没有，"
-                        .. "扫码登录也不下发它）：请把浏览器 Cookie 填进 config.lua 的 "
-                        .. "cookie_string，再从插件菜单「重新加载配置文件」。%1"), url),
-                }
-            end
-        end
+        -- 「0 字节」的成因（v2.16.2/2.16.3 分清的三种）在这里**不再直接给用户看**：
+        --   ① 没带 Cookie / ② 缺 s_v_web_id / ③ 频率限流。
+        -- 因为 v2.16.4 起上层会先降级到免签名端点，只有降级也失败才轮到这些文案露脸。
+        -- `err.had_cookie` / `err.has_sv_web_id`（client.lua 的 web_finish 填的）仍保留，
+        -- 便于日志与回归断言区分三种成因 —— 别删，删了就没法判断"是没登录还是被限流"。
         return nil, err
     end
     if tonumber(data.code) ~= 0 then return nil, api_error(data, url) end
@@ -549,6 +545,111 @@ function Store.search(client, keyword, opts)
         authors = dd.search_author_data_list,
         page_index = tonumber(opts.page_index) or 0,
     }
+end
+
+--- 免登录搜索（novel.snssdk.com / api-lf.fanqiesdk.com）。
+--- **免签名、免 cookie、免风控标识 `s_v_web_id`** —— 只需 aid / offset / q 三个参数，
+--- 逐项实测记录在 fanqie.lua 的 `SEARCH_LITE_BASE` 注释里（含真分页、参数无效清单、字段清单）。
+--- 走 `app_get_json`：该端点属 App 侧，用 `com.dragon.read/…` UA（实测带不带网页 Referer 都正常）。
+---@param opts table|nil { page_index=0, offset=nil }
+---@return table|nil { books={…}, total, has_more, next_offset, lite=true }, table|nil err
+function Store.search_lite(client, keyword, opts)
+    opts = opts or {}
+    if type(keyword) ~= "string" or keyword == "" then
+        return nil, { kind = "arg", message = _("请输入搜索关键词") }
+    end
+    local url = FanQie.search_lite_url(keyword, opts)
+    local data, err = client:app_get_json(url)
+    if not data then return nil, err end
+    if tonumber(data.code) ~= 0 then return nil, api_error(data, url) end
+    local dd = data.data
+    if type(dd) ~= "table" then return nil, shape_error("data 不是对象", url) end
+    local books, nerr = normalize_list(dd.ret_data, "search_lite", url)
+    if not books then return nil, nerr end
+    return {
+        books = books,
+        -- 该接口**不返回总数**：宁可不给，也不拿本页条数冒充「共 N 本」
+        -- （标题里的 total 会误导成「这本书只有 10 个结果」）。
+        has_more = dd.has_more == true,
+        -- 服务端直接给下一页偏移（= 本页 offset + 本页条数），比自己算 page_index*10 更准
+        next_offset = tonumber(dd.offset),
+        page_index = tonumber(opts.page_index) or 0,
+        lite = true,
+    }
+end
+
+--- 把网页搜索的失败归类成**语义化错误**。
+--- 🔴 「0 字节」有**三个成因**（v2.16.2 分清前两个，v2.16.3 补第三个）：
+---   ① 没带 Cookie                ⇒ 该登录
+---   ② 带了 Cookie 但缺 s_v_web_id ⇒ 该补风控标识（**重新登录也拿不到它**）
+---   ③ 带了 Cookie 且有 s_v_web_id ⇒ 多为频率限流，该重试
+--- 只按「有没有 Cookie」二分是不够的：缺 `s_v_web_id` 的用户（典型是刚扫码登录过的）
+--- 会被引导去**重复登录**，而扫码链路本来就不下发 `s_v_web_id` ⇒ 怎么登都没用。
+--- ⚠️ v2.16.4 起它**只在免登录降级也失败之后**才用得上（判据本身一字未改）——
+--- 分类逻辑必须留在，否则日志与回归就没法区分「是没登录、还是被限流」。
+---@return table err（可能是原样返回的那个）
+local function classify_search_error(err, url)
+    if err and err.kind == "empty" then
+        if err.had_cookie ~= true then
+            return {
+                kind = "auth",
+                message = T(_("搜索接口需要登录番茄账号（无 Cookie 时该接口返回空响应）：%1"), url),
+            }
+        elseif err.has_sv_web_id ~= true then
+            return {
+                kind = "risk",
+                message = T(_("搜索接口需要风控标识 s_v_web_id（当前 Cookie 里没有，"
+                    .. "扫码登录也不下发它）：请把浏览器 Cookie 填进 config.lua 的 "
+                    .. "cookie_string，再从插件菜单「重新加载配置文件」。%1"), url),
+            }
+        end
+    end
+    return err
+end
+
+--- 搜索书籍。**网页接口优先，失败自动降级到免签名端点**。
+---
+--- 🔴 为什么要降级（v2.16.4）：网页搜索认的是浏览器安全 SDK **本地生成**、
+--- 由服务端「认识」的 `s_v_web_id`，而**扫码登录链路不下发它**（逐跳实测：
+--- 登录页 / get_qrcode / check_qrconnect / 首页 / 搜索页 / 书库，Set-Cookie 只有
+--- passport_csrf_token）⇒ 只扫码登录的用户「书架正常、搜索恒失败」，
+--- 且**怎么登都没用**，只能手动去浏览器抄 Cookie —— 那不该是使用前提。
+--- 免签名端点对「缺 s_v_web_id / 没登录 / 被限流」一概不敏感，所以拿它兜底：
+--- 搜得出来就正常给用户，搜不出来才轮到错误文案。
+---
+--- ⚠️ 降级结果带 `lite = true`（调用方据此提示「无字数 / 在读」并在筛选上让步）；
+---    `fallback_of` 记录网页侧失败的种类（auth / risk / empty / …），供日志与回归断言。
+---@param keyword string
+---@param opts table|nil { page_index=0, page_count=10 }
+---@return table|nil { books = {…}, total = number, lite? = true }, table|nil err
+function Store.search(client, keyword, opts)
+    opts = opts or {}
+    if type(keyword) ~= "string" or keyword == "" then
+        return nil, { kind = "arg", message = _("请输入搜索关键词") }
+    end
+    local url = FanQie.store_search_url(keyword, opts)
+    local r, err = search_web(client, keyword, opts, url)
+    if r then return r end
+
+    -- 降级：网页侧**任何**失败都试一遍免登录端点（它对风控/登录/限流都不敏感）。
+    local lite, lite_err = Store.search_lite(client, keyword, opts)
+    if lite then
+        lite.fallback_of = (err and err.kind) or "unknown"
+        return lite
+    end
+
+    -- 两边都失败 ⇒ 这才轮到解释「网页侧为什么不行」（auth / risk / empty 三分类）。
+    -- 必须把「免登录也试过了」讲出来 —— 否则用户会以为又是自己没配好 Cookie，
+    -- 而那正是 v2.16.4 要消灭的那种误导。
+    local primary = classify_search_error(err, url)
+    if primary then
+        primary.lite_error = lite_err and lite_err.message or nil
+        primary.message = T(_("%1（已自动改用免登录搜索，同样失败：%2）"),
+            tostring(primary.message or ""),
+            tostring((lite_err and lite_err.message) or _("无响应")))
+        return nil, primary
+    end
+    return nil, lite_err
 end
 
 -- ------------------------------------------------------------------ 榜单

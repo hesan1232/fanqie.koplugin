@@ -1,16 +1,16 @@
 {
-  "version": "2.16.3",
-  "name": "番茄小说 2.16.3",
+  "version": "2.16.4",
+  "name": "番茄小说 2.16.4",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.3/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.4/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.3/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.3/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.3/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.3/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.4/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.4/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.4/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.4/fanqie.koplugin.zip"
   ],
-  "size": 382101,
-  "sha256": "e8d74d43bc3ca30a5af2f6ddab2ecc02cdc445e4848250c680e37f122ac674ff",
-  "notes": "**修「书城搜索一直加载失败」的真因：搜索接口要的是风控标识 `s_v_web_id`，而不是登录态 —— 且手动 Cookie 兜底在已登录时形同虚设**\n\n- **修**：**搜索接口只认 `s_v_web_id`**（番茄 web 风控指纹 cookie）。实测二分定位：\n  只带 `s_v_web_id` 一个键 → 11 KB / 10 条正常；只带 `sessionid`（登录态）→ 0 字节；\n  只带 `ttwid` → 0 字节；不带 → 0 字节；**伪造值同样 0 字节**（服务端只认它认可的真值）。\n  这就解释了那个长期矛盾：**书架只认登录态所以正常，搜索认风控标识所以恒失败**。\n- **修**：**手动 Cookie 兜底在「已登录」时完全不生效**（真正的坑）。旧逻辑发现本地已有\n  扫码 cookie 就**整段跳过** `config.cookie_string` ⇒ 用户把浏览器 Cookie 填进 `config.lua`\n  也**一点不生效**，而扫码链路又拿不到 `s_v_web_id`（登录页 / 二维码接口 / 首页 / 搜索页\n  / 书库全部实测不下发）⇒ **根本没有任何兜底手段**。现改为**只补本地缺失的键、绝不覆盖\n  扫码结果**，并在「重新加载配置文件」后如实提示「已补入本地缺失的 Cookie: s_v_web_id」。\n- **修**：**错误分类由二分改三分**（0 字节的三种成因处置相反）：没带 Cookie → 提示登录；"
+  "size": 386943,
+  "sha256": "9ee26017a05d5df62061794db4f45cded2f574441fd6dff4ee17c93b67ae95ab",
+  "notes": "**书城搜索不再依赖浏览器 Cookie：网页接口失败时自动降级到免签名搜索端点**\n\n- **修**：**只扫码登录的用户终于能搜书了**。网页搜索认的是**风控标识 `s_v_web_id`** ——\n  它由浏览器安全 SDK 本地随机生成、服务端只认「它见过的那一串」（真值改 1 个字符、\n  只换时间戳、按算法自造 → **一律 0 字节**，同轮哨兵正常 ⇒ 不是限流），\n  而**扫码登录链路不下发它**（逐跳 Set-Cookie 只有 `passport_csrf_token`）。\n- **改**：搜索变为**网页优先 + 失败自动降级**到免签名端点\n  （`novel.snssdk.com/api/novel/channel/homepage/search/search/v1/?aid=1967&offset=&q=`）——\n  免签名 / 免 Cookie / 免风控标识，**真分页**，搜到的 book_id 能直接读目录。\n- **取舍**：降级结果**不含**字数 / 在读 / 最新章 / 总数（界面提示一次）；网页接口仍优先使用。\n- **保留**：网页接口那套「0 字节三成因」分类（没登录 / 缺风控标识 / 被限流）一字未改，\n  只是改在**降级也失败之后**才用来解释原因，日志与回归仍能区分三者。"
 }

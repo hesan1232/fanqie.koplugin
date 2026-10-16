@@ -12,7 +12,7 @@ local _ = ok_gettext and gettext or function(text) return text end
 
 return {
     -- 版本号（唯一来源，main.lua 和 _meta.lua 都读这里）
-    version = "2.16.3",
+    version = "2.16.4",
 
     -- 插件描述（_meta.lua 的 description 字段使用）
     description = _("在 KOReader 中阅读番茄小说，支持扫码登录、官方 App 协议正文/段评/漫画、书城浏览、在线更新、两层智能缓存、进度同步，适配墨水屏黑白显示。"),
