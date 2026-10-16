@@ -8,7 +8,8 @@
 对外接口：
   StoreView.show(opts)              → 书籍列表菜单（列表行 / 封面网格两种模式）
   StoreView.update(menu, books, opts) → 原地换表（翻页追加 / 刷新 / 换显示方式）
-  StoreView.show_chooser(opts)      → 通用纯文本选择菜单（分类/排序/完本状态）
+  StoreView.show_chooser(opts)      → 通用纯文本选择器（分类/排序/完本状态）
+                                      · 短列表（≤8 项）→ 弹窗；长列表/带分组头 → 全屏菜单
   StoreView.resolve_view(opts)      → 当前生效的显示方式与网格列数
   StoreView.view_label(menu)        → 操作框里显示的那个短标签
   StoreView.show_view_dialog(menu)  → 「显示方式」对话框（列表 / 网格 3×3…4×4 / 自定义列×行）
@@ -947,18 +948,57 @@ function StoreView.update(menu, books, opts)
     menu._suppress_page_callback = false
 end
 
---- 通用纯文本选择菜单（男/女频、分类 label、分类项、排序、完本状态都用它）。
---- 选中后**先关掉本菜单**再执行回调，避免选择器叠在新界面后面。
----@param opts table { title, entries = { { text=, callback= } }, on_close }
-function StoreView.show_chooser(opts)
-    opts = opts or {}
-    -- 防叠加：上一个选择菜单还开着就先收掉（连点两次「排序」会叠两层，
-    -- 而且底层那个还关不掉）。
-    StoreView.close_chooser()
+-- 条目数 ≤ 此值，且**没有分组分隔头** ⇒ 用弹窗；否则开全屏选择菜单。
+--
+-- 🔴 为什么不一律弹窗：KOReader **没有「下拉浮层」这种原生控件**，能弹出来的只有两类：
+--    * `ButtonDialog`（本阈值走这条）：居中、原生支持点外部 / 按返回关闭，但内容只是
+--      「一整条长滚动」—— 没有分页、没有分组分隔头、没有页脚，150+ 条就是十几屏无结构长串；
+--    * `Menu`：分页 + `items_per_page` + `select_enabled=false` 的分隔头全都有，
+--      但 `Menu:init` 把 `dimen` 写死成 `x=0, y=0, w = self.width or 屏宽`（`menu.lua:692`）
+--      ⇒ 不传 width/height 就是**全屏**。
+--    分类选择器（男频 154 / 女频 182）与排行榜入口（30 条）非分页+分组不可，只能走 `Menu`；
+--    而排序(3) / 状态(3) / 性别(2) / 分类浏览(2~3) / 换榜别(3~5) 只有几项，
+--    开一整屏菜单纯属浪费。两边各取所长。
+local CHOOSER_POPUP_MAX = 8
 
+--- 短列表：弹窗（居中、点外部 / 按返回关闭，与原「操作框」同款）。
+--- 选中后**先关掉弹窗**再执行回调，避免选择器叠在新界面后面。
+local function show_chooser_popup(opts, entries)
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local buttons = {}
+    for _i, e in ipairs(entries) do
+        buttons[#buttons + 1] = { {
+            text = e.text,
+            callback = function()
+                local cb = e.callback
+                StoreView.close_chooser()
+                if cb then cb() end
+            end,
+        } }
+    end
+    -- 显式「取消」：墨水屏上「点外部关闭」不是人人都知道，留着与原操作框的「关闭」一致
+    buttons[#buttons + 1] = { { text = _("取消"), callback = function() StoreView.close_chooser() end } }
+
+    local dialog
+    dialog = ButtonDialog:new{
+        title = opts.title or _("请选择"),
+        title_align = "center",
+        buttons = buttons,
+        -- 点外部 / 按返回关掉时也要摘引用（否则 close_chooser 会对已关的弹窗空关一次）
+        tap_close_callback = function()
+            if StoreView._chooser == dialog then StoreView._chooser = nil end
+        end,
+    }
+    StoreView._chooser = dialog
+    UIManager:show(dialog)
+    return dialog
+end
+
+--- 长列表：全屏选择菜单（可翻页 + 分组分隔头）。
+local function show_chooser_menu(opts, entries)
     local menu
     local items = {}
-    for _i, e in ipairs(opts.entries or {}) do
+    for _i, e in ipairs(entries) do
         if e.separator then
             -- 分组分隔头：**不可点**（真 Menu 的 select_enabled=false 语义 ——
             -- onMenuSelect 见 false 直接跳过，不会关窗也不会触发回调）。
@@ -998,7 +1038,33 @@ function StoreView.show_chooser(opts)
     return menu
 end
 
---- 关闭当前的选择菜单（若还开着）。
+--- 通用纯文本选择器（男/女频、分类 label、分类项、排序、完本状态都用它）。
+--- 按「条目数 + 有没有分组分隔头」自动分派到弹窗 / 全屏菜单（见 `CHOOSER_POPUP_MAX`）。
+--- 选中后**先关掉选择器**再执行回调，避免它叠在新界面后面。
+---@param opts table { title, entries = { { text=, callback=, separator?= } }, on_close, per_page }
+---  ⚠️ `on_close` / `per_page` 只对**全屏菜单**分支生效（都是长列表才关心的东西；目前也没有调用方传）。
+function StoreView.show_chooser(opts)
+    opts = opts or {}
+    -- 防叠加：上一个选择器还开着就先收掉（连点两次「排序」会叠两层，
+    -- 而且底层那个还关不掉）。
+    StoreView.close_chooser()
+
+    local entries = opts.entries or {}
+
+    -- 分组分隔头是**长列表**的结构标记（没有它 150+ 条就是一串扫不动的东西）
+    -- ⇒ 带分隔头的一律走全屏菜单，不吃条目数阈值。
+    local has_separator = false
+    for _i, e in ipairs(entries) do
+        if e.separator then has_separator = true break end
+    end
+
+    if #entries > 0 and #entries <= CHOOSER_POPUP_MAX and not has_separator then
+        return show_chooser_popup(opts, entries)
+    end
+    return show_chooser_menu(opts, entries)
+end
+
+--- 关闭当前的选择器（弹窗或菜单，若还开着）。
 function StoreView.close_chooser()
     local menu = StoreView._chooser
     StoreView._chooser = nil
