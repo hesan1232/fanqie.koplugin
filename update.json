@@ -1,16 +1,16 @@
 {
-  "version": "2.16.7",
-  "name": "番茄小说 2.16.7",
+  "version": "2.16.8",
+  "name": "番茄小说 2.16.8",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.7/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.8/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.7/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.7/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.7/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.7/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.8/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.8/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.8/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.8/fanqie.koplugin.zip"
   ],
-  "size": 393861,
-  "sha256": "181cc3a9d6d26d247b53eca2d1f88f0811b476370ac821281fb26fabc4377b65",
-  "notes": "**段评图片缓存有了有效期（默认 1 小时），缓存管理新增「清空评论缓存」**\n\n- **有效期**：段评图片（`comment_images/`）此前落盘后**永不失效**，只增不减。\n  现在命中缓存前先判新鲜（**分钟级**），过期图「当没有」自动重下覆盖；\n  档位 **10 / 30 / 60 分钟 / 3 小时 / 永久**（缓存管理 → 评论图片有效期，默认 1 小时）。\n- **自动清理**：打开段评时**每小时最多一次**清理过期图片（过期图在命中前已被当成\n  没有，清理只负责回收磁盘）；只删 `comment_images/` 这一层图片文件，绝不递归。\n- **清空评论缓存**：缓存管理新增一条，**段评图片目录 + 内存段评页缓存**一次清掉，\n  菜单行实时显示占用（N 张 · X MB）；空时明确提示「评论缓存是空的」。\n- **修预取死角**：过期图此前会被预取循环的「文件存在就跳过」短路，永远卡在\n  「正在后台加载…」；现在跳过条件为「存在**且新鲜**」。\n- 「永久」档行为与旧版完全一致（不重下、不清理），介意流量的用户可选。"
+  "size": 393264,
+  "sha256": "37f412b5accc9b45425326000d9fcc326ad349106e958557092d1f1000340f65",
+  "notes": "**段评界面做减法：去掉「展开全部回复」批量按钮、头行折叠标记与标题计数**\n\n- **移除底部「展开全部回复」批量按钮**（含「加载更多回复」「收起全部回复」形态）：\n  单条展开/收起本来就靠点头行，批量开关反而占掉一整行按钮位。\n- **头行不再追加**「`［展开 N 条回复］`/`［收起］`」折叠标记：回复数已经在头行的\n  「**回复N**」里（保留），展开/收起操作不变（仍点该条的头行+正文）。\n- **标题栏去掉**「段评 X/Y (共Z条)」的第几条/总数计数，只留「段评」；\n  分页时的「第X/Y页」指示保留。\n- TextViewer 回退路径（CommentView 不可用时）同样口径：头行去折叠标记，\n  单条展开/收起靠下方「N 展开…/N 收起」按钮。\n- 评论回复数据链路**零改动**（本轮真实接口实测：`reply_list` 逐条返回、\n  `reply_id`/树构建/分页续拉均正常）。"
 }

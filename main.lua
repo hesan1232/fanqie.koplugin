@@ -261,7 +261,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.7",
+    version = Info and Info.version or "2.16.8",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -1040,14 +1040,8 @@ local function append_comment_lines(number, comment, expanded)
     if ts ~= "" then
         head = head .. "  " .. ts
     end
-    -- 折叠标记写进标题：TextViewer **没有行内可点区域**（这是它与 CommentView 的
-    -- 唯一交互差别 —— 操作全靠下面那些按钮），用户靠这一行判断
-    -- 「这条有没有回复、现在是展开还是收起」。文案与 CommentView 主路径保持一致。
-    if expanded then
-        head = head .. _("   ［收起］")
-    elseif replies > 0 then
-        head = head .. T(_("   ［展开 %1 条回复］"), tostring(replies))
-    end
+    -- v2.16.8 起头行不再追加折叠标记（与 CommentView 主路径同口径）：
+    -- 回复数已经在「回复N」里，这条的展开/收起靠下方「N 展开…/N 收起」按钮。
     local out = { head }
     local body = tostring(comment.text or "")
     if body ~= "" then
@@ -1390,65 +1384,6 @@ end
 
 -- 「回复」按钮（cycling）：有收起的→全部展开；都展开但有更多→续拉；
 -- 全部加载完→全部收起。整条链路只占**一个**固定按钮。
-function FanQiePlugin:toggleAllParaReplies()
-    local state = self._para_view_state
-    if not state then
-        self:showInfo(_("段评数据已失效，请重新打开"))
-        return
-    end
-    local cache = state.ident and self._para_pages and self._para_pages[state.ident] or nil
-    if not cache then
-        self:showInfo(_("段评数据已失效，请重新打开"))
-        return
-    end
-    cache.expanded = cache.expanded or {}
-    cache.replies = cache.replies or {}
-
-    local to_expand, to_more, any_expanded = {}, {}, false
-    for i, comment in ipairs(state.comments) do
-        local cid = comment.comment_id and tostring(comment.comment_id) or nil
-        local n = tonumber(comment.reply_count) or 0
-        if cid and n > 0 then
-            if not cache.expanded[cid] then
-                to_expand[#to_expand + 1] = i
-            else
-                any_expanded = true
-                local rs = cache.replies[cid]
-                if rs and rs.has_more then to_more[#to_more + 1] = i end
-            end
-        end
-    end
-
-    local chain
-    chain = function(list, pos)
-        if not list or pos > #list then
-            self:_renderParaReviewView(true)
-            return
-        end
-        self:_fetchParaReplies(state.index, list[pos], function(ok)
-            if not ok then
-                -- 失败（含上限）也继续渲染已拉到的部分
-                self:_renderParaReviewView(true)
-                return
-            end
-            chain(list, pos + 1)
-        end)
-    end
-
-    if #to_expand > 0 then
-        chain(to_expand, 1)
-    elseif #to_more > 0 then
-        chain(to_more, 1)
-    elseif any_expanded then
-        for cid in pairs(cache.expanded) do
-            cache.expanded[cid] = nil
-        end
-        self:_renderParaReviewView(true)
-    else
-        self:showInfo(_("这一页的评论都没有回复"))
-    end
-end
-
 -- 后台串行下载本页缺失的段评图片；每张完成即 refresh（逐张浮现）。
 function FanQiePlugin:_prefetchParaImages(index)
     local state = self._para_view_state
@@ -1607,15 +1542,8 @@ function FanQiePlugin:_renderParaReviewView(in_place)
             user, comment_titles_text(comment), likes, replies)
         local ts = fmt_comment_time(comment.create_time)
         if ts ~= "" then head = head .. "  " .. ts end
-        -- 折叠标记写进头行 —— **这一行本身就是可点行**（v2.12.0 起，见 comment_view 的 TapRow）。
-        -- 文案要**自解释**：直接写「展开 N 条回复」，不要只放一个 ▼/▶
-        -- （用户既看不出 N 是多少，也看不出它可点）。已展开时写「收起」：
-        -- 条数此刻就列在下面，再写一遍是噪音。
-        if expanded then
-            head = head .. _("   ［收起］")
-        elseif replies > 0 then
-            head = head .. T(_("   ［展开 %1 条回复］"), tostring(replies))
-        end
+        -- v2.16.8 起头行不再追加「［展开 N 条回复］/［收起］」标记：回复数已经在
+        -- 「回复N」里（可发现性靠它），展开/收起仍靠点头行（TapRow 不变）。
 
         local imgs, missing = view_image_entries(self, comment, i, true)
         for _k, m in ipairs(missing) do all_missing[#all_missing + 1] = m end
@@ -1675,35 +1603,8 @@ function FanQiePlugin:_renderParaReviewView(in_place)
     end
 
     -- 底部按钮（固定数量，不随评论条数增长）
-    -- ⚠️ 这一行是**批量**开关（单条点击见上面的 tap）——所以文案必须带「全部」，
-    --    否则和「点评论展开这一条」混淆。
-    local buttons_table = {}
-    local reply_label = _("展开全部回复")
-    local any_collapsed = false
-    for _i, comment in ipairs(comments) do
-        local cid = comment.comment_id and tostring(comment.comment_id) or nil
-        local n = tonumber(comment.reply_count) or 0
-        if cid and n > 0 and not cache_expanded[cid] then
-            any_collapsed = true
-            break
-        end
-    end
-    if not any_collapsed then
-        local any_more = false
-        for _i, comment in ipairs(comments) do
-            local cid = comment.comment_id and tostring(comment.comment_id) or nil
-            local rs = cid and cache_replies[cid] or nil
-            if cid and cache_expanded[cid] and rs and rs.has_more then
-                any_more = true
-                break
-            end
-        end
-        reply_label = any_more and _("加载更多回复") or _("收起全部回复")
-    end
-    buttons_table[#buttons_table + 1] = { {
-        text = reply_label,
-        callback = function() self:toggleAllParaReplies() end,
-    } }
+    -- v2.16.8 起**不再有「展开全部回复」批量按钮**：单条展开/收起靠点头行，
+    -- 更多回复靠「… 还有 N 条回复」行，批量开关的收益小于它占的一行空间。
 
     local page = state.page or 1
     local has_more = state.info.has_more == true
@@ -1713,6 +1614,7 @@ function FanQiePlugin:_renderParaReviewView(in_place)
         total_pages = math.ceil(total / PARA_REVIEW_PAGE_SIZE)
     end
 
+    local buttons_table = {}
     local page_row = {}
     -- 🔴 翻页/关闭按钮**绝不**在回调里直接 `UIManager:close` 再开新窗（v2.16.0 实测真机
     --    「点下一页秒闪退」的根因）。两个独立的坑：
@@ -1766,8 +1668,8 @@ function FanQiePlugin:_renderParaReviewView(in_place)
     }
     buttons_table[#buttons_table + 1] = page_row
 
-    local viewer_title = T(_("段评 %1/%2 (共%3条)"), tostring(state.index),
-        tostring(state.total_reviews), tostring(total))
+    -- v2.16.8 起标题不带「第几条/共几条」：翻页指示（第X/Y页）保留在后面。
+    local viewer_title = _("段评")
     if total_pages then
         viewer_title = viewer_title .. T(_(" 第%1/%2页"), tostring(page), tostring(total_pages))
     end
@@ -1948,8 +1850,8 @@ function FanQiePlugin:_renderParaReviewText(in_place)
         },
     }
 
-    local viewer_title = T(_("段评 %1/%2 (共%3条)"), tostring(state.index),
-        tostring(state.total_reviews), tostring(total))
+    -- v2.16.8 起标题不带「第几条/共几条」（与 CommentView 主路径同口径）
+    local viewer_title = _("段评")
     if total_pages then
         viewer_title = viewer_title .. T(_(" 第%1/%2页"), tostring(page), tostring(total_pages))
     end
