@@ -261,23 +261,35 @@ function CommentView:_append_block(group, block, content_w, indent)
             local w = tonumber(im.w) or 0
             local h = tonumber(im.h) or 0
             local max_w = math.floor(content_w * IMAGE_MAX_WIDTH_RATIO)
-            local disp_w, disp_h
+            local iw
             if w > 0 and h > 0 then
-                disp_w, disp_h = w, h
-                if disp_w > max_w then
-                    disp_h = math.floor(disp_h * max_w / disp_w)
-                    disp_w = max_w
-                end
+                -- 等比算出**精确**渲染尺寸，直接传 width/height（不给 scale_factor
+                -- ⇒ ImageWidget 拉伸到该尺寸；比例一致 ⇒ 无变形）。
+                -- 🔴 不能再给 scale_factor=0 + 大 box：getSize 会**原样返回 box**
+                --    （图片在 box 里居中），比例不符就是一整块留白 —— 旧实现
+                --    w/h 缺失时 box 是 max_w×max_w 正方形，竖图/横图周围全空白
+                --    （用户报的「好多都有留白」）。真实 w/h 由 main.lua 探测
+                --    （fanqie/img_size.lua）后放进 im.w/im.h。
+                local disp_w = math.min(w, max_w)
+                local disp_h = math.floor(h * disp_w / w + 0.5)
+                iw = ImageWidget:new{
+                    file = im.path,
+                    width = disp_w,
+                    height = disp_h,
+                    file_do_cache = true,
+                }
             else
-                disp_w, disp_h = max_w, max_w
+                -- 保底：连服务端字段和文件头都拿不到 → best-fit 正方形 box
+                -- （best-fit 保持比例、图片在 box 内居中，无法避免排版留白，
+                -- 但探测覆盖绝大多数图，走到这的只有损坏文件）
+                iw = ImageWidget:new{
+                    file = im.path,
+                    width = max_w,
+                    height = max_w,
+                    scale_factor = 0,
+                    file_do_cache = true,
+                }
             end
-            local iw = ImageWidget:new{
-                file = im.path,
-                width = disp_w,
-                height = disp_h,
-                scale_factor = 0,
-                file_do_cache = true,
-            }
             -- 本视图确实往屏幕上画过图片 ⇒ 关窗时要全刷（理由见 onClose）。
             -- ⚠️ 只认**真的造出 ImageWidget** 的分支：`{ note = "…" }` 那类占位/不可显示
             --    提示只是灰字，不产生图片残影，不该把纯文字页也拖成全刷。

@@ -49,6 +49,7 @@ local BookDetail = safe_require("fanqie.book_detail")
 
 -- 封面缓存的有效期 / 占用 / 清理（见 fanqie/cover_cache.lua）
 local CoverCache = safe_require("fanqie.cover_cache")
+local ImgSize = safe_require("fanqie.img_size")
 
 local PathChooser = safe_require("ui/widget/pathchooser")
 
@@ -261,7 +262,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.8",
+    version = Info and Info.version or "2.16.9",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -1197,7 +1198,17 @@ local function view_image_entries(plugin, owner, owner_no, allow_tap)
             local path = para_image_path(plugin, owner, owner_no, k, im)
             -- 过期图当没有：落进 missing，预取会重下并覆盖同名文件
             if H.file_exists(path) and comment_image_fresh(plugin, path) then
-                entries[#entries + 1] = { path = path, w = im.width, h = im.height,
+                -- 渲染尺寸用**文件真实宽高**：服务端的 width/height 经常缺
+                -- （`~tplv…:300:0` 模板图就没有）或与转码产物对不上，比例一错
+                -- 渲染端只能正方形兜底 ⇒ 图周围全是留白（用户报的问题）。
+                -- 读文件头 O(1)，结果按路径记忆（见 fanqie/img_size.lua）；
+                -- 探测失败回退服务端字段。
+                local w, h = im.width, im.height
+                if ImgSize then
+                    local rw, rh = ImgSize.probe(path)
+                    if rw and rh then w, h = rw, rh end
+                end
+                entries[#entries + 1] = { path = path, w = w, h = h,
                                           img_no = k, tap = tap }
             else
                 -- 「正在后台加载…」这一行也可点：点它当场下载并打开
@@ -1982,7 +1993,8 @@ function FanQiePlugin:showCommentImage(index, comment_no, img_no)
     -- 两边各写一份的话，改了一处就会出现「内嵌能显示、点开却说文件不存在」。
     local path = para_image_path(self, comment, comment_no, img_no, im)
 
-    local title = T(_("段评图片 %1/%2"), tostring(img_no), tostring(#list))
+    -- v2.16.9 起不再带标题栏：全屏直出，「原尺寸 / 旋转 / 关闭」按钮
+    -- 点一下屏幕即呼出（ImageViewer 自带行为，与标题栏无关）。
     local self_ref = self
     local function open_file(p)
         if not ImageViewer then
@@ -1991,8 +2003,7 @@ function FanQiePlugin:showCommentImage(index, comment_no, img_no)
         end
         UIManager:show(ImageViewer:new{
             file = p,
-            with_title_bar = true,
-            title_text = title,
+            with_title_bar = false,
         })
     end
 

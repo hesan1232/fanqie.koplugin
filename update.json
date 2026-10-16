@@ -1,16 +1,16 @@
 {
-  "version": "2.16.8",
-  "name": "番茄小说 2.16.8",
+  "version": "2.16.9",
+  "name": "番茄小说 2.16.9",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.8/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.9/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.8/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.8/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.8/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.8/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.9/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.9/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.9/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.9/fanqie.koplugin.zip"
   ],
-  "size": 393264,
-  "sha256": "37f412b5accc9b45425326000d9fcc326ad349106e958557092d1f1000340f65",
-  "notes": "**段评界面做减法：去掉「展开全部回复」批量按钮、头行折叠标记与标题计数**\n\n- **移除底部「展开全部回复」批量按钮**（含「加载更多回复」「收起全部回复」形态）：\n  单条展开/收起本来就靠点头行，批量开关反而占掉一整行按钮位。\n- **头行不再追加**「`［展开 N 条回复］`/`［收起］`」折叠标记：回复数已经在头行的\n  「**回复N**」里（保留），展开/收起操作不变（仍点该条的头行+正文）。\n- **标题栏去掉**「段评 X/Y (共Z条)」的第几条/总数计数，只留「段评」；\n  分页时的「第X/Y页」指示保留。\n- TextViewer 回退路径（CommentView 不可用时）同样口径：头行去折叠标记，\n  单条展开/收起靠下方「N 展开…/N 收起」按钮。\n- 评论回复数据链路**零改动**（本轮真实接口实测：`reply_list` 逐条返回、\n  `reply_id`/树构建/分页续拉均正常）。"
+  "size": 397217,
+  "sha256": "d8aa877a890e5ad0e89818666baf116bd8b703f3abab955c4278c271beee17e3",
+  "notes": "**评论图片按真实比例渲染（去留白），点图全屏直出不再套标题栏弹窗**\n\n- **按原始比例渲染**：此前渲染尺寸只信服务端的 `width`/`height` 字段——模板图\n  经常没有这俩字段，缺失时退到「内容区宽 × 内容区宽」的**正方形**兜底框，\n  竖图/横图周围全是留白。现在下载落盘后**读文件头探测真实宽高**\n  （新增 `fanqie/img_size.lua`：PNG / JPEG / WebP-VP8/VP8L/VP8X，O(1) 读头、\n  按路径记忆），探测结果**覆盖**服务端字段（字段错也一并纠正）；探测失败才\n  回退服务端字段，再回退正方形兜底。\n- **点图全屏直出**：图片查看器不再带「段评图片 N/M」标题栏——点图（或点\n  「正在后台加载…」行）直接全屏显示；「原尺寸 / 旋转 / 关闭」按钮**点一下屏幕**\n  即呼出（KOReader 图片查看器自带行为，功能一项不少）。"
 }
