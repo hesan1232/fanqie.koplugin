@@ -515,6 +515,13 @@ function CommentView:refresh()
         if ok and type(o) == "table" and type(o.y) == "number" then offset = o end
     end
 
+    -- 🔴 旧框占的屏幕区域，**必须在重建前**取（重建后 `self.frame` 就指向新树了）：
+    --    图片插进来会让框变高，而框是**居中**摆的 ⇒ 旧框的上下边缘不在新框里，
+    --    只刷新框会在屏幕上留一圈旧框的残影。取副本，别存引用（新树 paintTo 时会
+    --    原地改写自己那份 dimen，虽不是同一个表，但存副本零风险）。
+    local old_frame_dimen = self.frame and self.frame.dimen
+        and self.frame.dimen.copy and self.frame.dimen:copy() or nil
+
     -- 旧树立刻回收显存（理由见 release_orphan_blitbuffers 的注释）：
     -- 「图片逐张回填」会让本函数被调用很多次，不主动回收就会攒出一堆等 GC 的大 bb。
     -- 🔴 旧 ScrollableContainer 的**整屏画布 `_bb`** 也要先走官方 `reset()` 释放：
@@ -542,7 +549,25 @@ function CommentView:refresh()
     --    "all" 会把 window_stack 上所有顶层 widget 全标脏 ⇒ 整屏重绘。
     --    图片是**逐张回填**的，每回填一张就整屏刷一次＝屏幕上不停闪。
     --    （官方惯例也是 `UIManager:setDirty(self, "partial", self.dimen)`。）
-    UIManager:setDirty(self, "partial", self.frame.dimen)
+    --
+    -- 🔴 region 必须**等这一帧画完再取**，所以传 lambda 而不是直接传 `self.frame.dimen`：
+    --    新树的 frame 是刚 `FrameContainer:new` 出来的，而 `dimen` **只在 `paintTo()` 里写**
+    --    （`frontend/ui/widget/container/framecontainer.lua:104-114`）⇒ 此处直接取恒为 **nil**；
+    --    而 `UIManager:_refresh` 见到「partial 且无 region」会把 region 补成**整屏**
+    --    （`frontend/ui/uimanager.lua:1175`：`region = region or Geom:new{...屏宽, 屏高}`）
+    --    ⇒ 实际效果仍是「每回填一张图整屏刷一次」，就是用户看到的**「图片一加载就闪一下」**。
+    --    pass 回调的写法正是官方对同一问题的答案（`UIManager:setDirty` 的 doc：
+    --    "callback, will be issued after painting"）；本文件的 `onShow` / `onCloseWidget`
+    --    也都是 lambda 形态 —— 只有这里漏了。
+    UIManager:setDirty(self, function()
+        local r = self.frame and self.frame.dimen
+        if r and old_frame_dimen then
+            -- 新旧框并集（见函数开头：框居中、高度随内容变 ⇒ 只刷一个会留残影）
+            return "partial", r:combine(old_frame_dimen)
+        end
+        -- 兜底：新框还没被画过（理论上不会走到 —— 本回调就是在绘制后消费的）
+        return "partial", r or old_frame_dimen
+    end)
 end
 
 function CommentView:getContentSize()
