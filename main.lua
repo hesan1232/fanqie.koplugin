@@ -261,7 +261,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.4",
+    version = Info and Info.version or "2.16.5",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -1327,6 +1327,7 @@ function FanQiePlugin:_fetchParaReplies(index, comment_no, on_done)
             return
         end
         -- ⚠️ 合并必须在父进程做：子进程里的 table 改动不会回传
+        local flat_before = #rs.flat
         for _i, r in ipairs(res.flat or {}) do
             rs.flat[#rs.flat + 1] = r
         end
@@ -1334,6 +1335,37 @@ function FanQiePlugin:_fetchParaReplies(index, comment_no, on_done)
         rs.cursor = tostring(res.cursor or "")
         rs.has_more = res.has_more == true
         rs.total = tonumber(res.total) or rs.total
+        -- ⚠️ 「空成功」闸门（2026-10-17，排查「展开回复后空白」）：client 层已挡
+        --    total>0 的空列表，这里再挡 total 一并被抹成 0 的那一种 —— 评论自己
+        --    明明挂着 reply_count>0，首页却 0 条。放行的后果不只是这一次空白：
+        --    pages 记成 1 后，「纯展开零请求」分支（rs.pages>0 直接复用缓存）会把
+        --    空结果**粘死**，收起再展开永远不再发请求 ⇒ 必须整体回滚（含裁掉本次
+        --    并进的空段、清零 pages/cursor/total），让下一次点开真的重新拉第一页。
+        local want = tonumber(comment.reply_count) or 0
+        if #rs.flat == 0 and want > 0 then
+            for _i = #rs.flat, flat_before + 1, -1 do
+                rs.flat[_i] = nil
+            end
+            rs.pages = 0
+            rs.cursor = ""
+            rs.has_more = true
+            rs.total = 0
+            if Log then
+                Log.warn("[段评] 回复列表为空但评论挂着回复数: cid=" .. tostring(cid)
+                    .. " reply_count=" .. tostring(want)
+                    .. " resp_pages=" .. tostring(res.pages)
+                    .. " resp_total=" .. tostring(res.total))
+            end
+            self_ref:showInfo(_("回复列表返回为空（可能被风控），请稍后重试"))
+            if on_done then on_done(false) end
+            return
+        end
+        if Log then
+            Log.info("[段评] 回复合并: cid=" .. tostring(cid)
+                .. " flat=" .. tostring(#rs.flat)
+                .. " total=" .. tostring(rs.total)
+                .. " pages=" .. tostring(rs.pages))
+        end
         if on_done then on_done(true) end
     end, { poll_interval = 0.125, timeout = 60 })
 end

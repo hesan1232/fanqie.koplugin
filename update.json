@@ -1,16 +1,16 @@
 {
-  "version": "2.16.4",
-  "name": "番茄小说 2.16.4",
+  "version": "2.16.5",
+  "name": "番茄小说 2.16.5",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.4/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.5/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.4/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.4/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.4/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.4/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.5/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.5/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.5/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.5/fanqie.koplugin.zip"
   ],
-  "size": 386943,
-  "sha256": "9ee26017a05d5df62061794db4f45cded2f574441fd6dff4ee17c93b67ae95ab",
-  "notes": "**书城搜索不再依赖浏览器 Cookie：网页接口失败时自动降级到免签名搜索端点**\n\n- **修**：**只扫码登录的用户终于能搜书了**。网页搜索认的是**风控标识 `s_v_web_id`** ——\n  它由浏览器安全 SDK 本地随机生成、服务端只认「它见过的那一串」（真值改 1 个字符、\n  只换时间戳、按算法自造 → **一律 0 字节**，同轮哨兵正常 ⇒ 不是限流），\n  而**扫码登录链路不下发它**（逐跳 Set-Cookie 只有 `passport_csrf_token`）。\n- **改**：搜索变为**网页优先 + 失败自动降级**到免签名端点\n  （`novel.snssdk.com/api/novel/channel/homepage/search/search/v1/?aid=1967&offset=&q=`）——\n  免签名 / 免 Cookie / 免风控标识，**真分页**，搜到的 book_id 能直接读目录。\n- **取舍**：降级结果**不含**字数 / 在读 / 最新章 / 总数（界面提示一次）；网页接口仍优先使用。\n- **保留**：网页接口那套「0 字节三成因」分类（没登录 / 缺风控标识 / 被限流）一字未改，\n  只是改在**降级也失败之后**才用来解释原因，日志与回归仍能区分三者。"
+  "size": 388516,
+  "sha256": "24a14231914dbf0a2b2233653bdf97ba1b31772af31e2e3533f652f6ee7926c4",
+  "notes": "**修「展开回复后一片空白，且永远空白」：空回复列表不再被当成「成功、零条回复」**\n\n- **修**：段评回复接口对被风控的请求也会回 **200 + code=0 + 空 `reply_list`**\n  （与「签名不合规回 200 空响应」同族）。改前插件把它当「成功、零条回复」\n  缓存住 ⇒ 点开回复后**空白**，且「已展开缓存」让这个空结果**粘死**——\n  收起再展开也**永远不再发请求**，只能退出章节重来。\n- **改**：两层闸门。客户端层：空列表且服务端 `total>0` → 显式报错；合并层：\n  首页 0 条但评论自己挂着回复数 → 整体回滚页数/游标并弹\n  「回复列表返回为空（可能被风控），请稍后重试」，**下一次点开真的重新拉**。\n- **日志**：该异常场景落 **WARN 级日志**（`fanqie.log` 里搜「回复列表为空」），\n  正常合并路径落 INFO（开 debug 才记）。\n- **提示**：若修复后仍空白，请把 `fanqie.log` 发上来 —— 新日志能直接区分"
 }

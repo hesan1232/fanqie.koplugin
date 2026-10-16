@@ -176,6 +176,17 @@ function Comments.replies(client, settings, comment_id, opts)
         return nil, nil, "段评回复响应缺少 reply_list"
     end
     local info = type(d.comment_list_info) == "table" and d.comment_list_info or {}
+    -- ⚠️ 「空成功」闸门（2026-10-17，排查「展开回复后空白」时定性）：
+    --    commentapi 对被风控的请求同样回 200 + code=0，只是 reply_list 为空数组
+    --    （与「签名不合规回 200 空响应」同一族，只是这次有 JSON 壳）。若放行，
+    --    上层会把这份空结果当「成功、零条回复」缓存住（expanded + pages=1）⇒
+    --    展开后空白，且「纯展开零请求」分支把它**粘死**（收起再展开也永远不再
+    --    发请求）。第一页就 0 条而服务端 total>0 ⇒ 明确报错，让上层弹「失败」。
+    --    （total 也可能一并被抹成 0 —— 那一种由 main.lua 的合并闸门按评论自身的
+    --    reply_count 兜住，两层缺一不可。）
+    if #(d.reply_list) == 0 and tonumber(info.total or 0) > 0 then
+        return nil, nil, "段评回复列表返回为空（可能被风控），total=" .. tostring(info.total)
+    end
     return d.reply_list, info
 end
 
