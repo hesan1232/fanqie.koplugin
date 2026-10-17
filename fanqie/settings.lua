@@ -446,12 +446,20 @@ function Settings:get_cache_stats()
     --    设备上就是「一打开缓存管理就闪退」，且没有任何可读提示。
     --    旧实现是裸 `lfs.dir` + 裸双层循环，零容错；而回归里 settings 一直被
     --    整体桩掉（Python 侧构造 get_cache_stats），这条路径从未被真实执行过。
-    local ok_top, iter = pcall(lfs.dir, self.cache_dir)
+    -- 🔴 `lfs.dir` 返回**两个**值 `(iter, dir_obj)`：目录句柄是泛型 for 的
+    --    **state**（KOReader 的 LuaFileSystem 里 `dir_iter` 第一句就是
+    --    `luaL_checkudata(L, 1, DIR_METATABLE)`），不是迭代函数的 upvalue。
+    --    只接 `iter` 再 `for entry in iter do` ⇒ state 为 nil ⇒ 第一轮就抛
+    --    "bad argument #1 to 'for iterator' (directory metatable expected, got nil)"，
+    --    被下面的 pcall 吞掉 ⇒ 统计恒为 0 本 0 章（就是这里引入的形态错误，
+    --    v2.16.13 起真实存在）。KOReader 自己的写法统一是
+    --    `local ok, iter, dir_obj = pcall(lfs.dir, p)` + `for f in iter, dir_obj do`。
+    local ok_top, iter, dir_obj = pcall(lfs.dir, self.cache_dir)
     if not ok_top or type(iter) ~= "function" then
         return stats
     end
     pcall(function()
-        for entry in iter do
+        for entry in iter, dir_obj do
             if entry ~= "." and entry ~= ".." then
                 local full_path = H.join_path(self.cache_dir, entry)
                 local mode = lfs.attributes(full_path, "mode")

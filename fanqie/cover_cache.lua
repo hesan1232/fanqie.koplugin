@@ -113,13 +113,27 @@ function CoverCache.is_fresh(path, days, now)
     return CoverCache.is_fresh_age(age, days)
 end
 
+-- 🔴 `lfs.dir` 返回**两个**值 `(iter, dir_obj)`，必须都留着。
+--    KOReader 用的是标准 LuaFileSystem：`dir_iter` 第一句就是
+--    `luaL_checkudata(L, 1, DIR_METATABLE)` —— 目录句柄是**泛型 for 的 state**
+--    （第二个返回值），不是迭代闭包的 upvalue。写成
+--    `local ok, iter = pcall(lfs.dir, dir)` 再 `for name in iter do`，
+--    state 就是 nil ⇒ 第一轮迭代直接抛
+--    "bad argument #1 to 'for iterator' (directory metatable expected, got nil)"。
+--    v2.16.0~v2.16.15 四处都是这么写的，于是 prune / clear / stats 在设备上
+--    恒等于「什么都没做」：缓存管理三行占用显示「（读取占用失败）」、
+--    清空缓存报 0 张、封面永不过期。
+--    KOReader 自己的写法统一是 `local ok, iter, dir_obj = pcall(lfs.dir, p)`
+--    + `for f in iter, dir_obj do`（见 frontend/util.lua:792、frontend/docsettings.lua:508）。
+--    回归桩以前只返回一个闭包、也不校验 state ⇒ 这个形态错误一直假绿。
+
 --- 目录占用：{ files = 张数, bytes = 字节 }。只统计图片后缀的文件。
 function CoverCache.stats(dir)
     local out = { files = 0, bytes = 0 }
     if type(dir) ~= "string" or dir == "" then return out end
-    local ok, iter = pcall(lfs.dir, dir)
+    local ok, iter, dir_obj = pcall(lfs.dir, dir)
     if not ok or not iter then return out end
-    for name in iter do
+    for name in iter, dir_obj do
         if name ~= "." and name ~= ".." and IMAGE_SUFFIX[CoverCache.suffix(name)] then
             out.files = out.files + 1
             out.bytes = out.bytes + (H.file_size(dir .. "/" .. name) or 0)
@@ -138,12 +152,12 @@ function CoverCache.prune(dir, days, now)
     days = tonumber(days) or 0
     if days <= 0 then return out end
     if type(dir) ~= "string" or dir == "" then return out end
-    local ok, iter = pcall(lfs.dir, dir)
+    local ok, iter, dir_obj = pcall(lfs.dir, dir)   -- dir_obj 必须留着，见 stats 上方说明
     if not ok or not iter then return out end
 
     local t = tonumber(now) or os.time()
     local limit = days * CoverCache.DAY
-    for name in iter do
+    for name in iter, dir_obj do
         if name ~= "." and name ~= ".." and IMAGE_SUFFIX[CoverCache.suffix(name)] then
             local path = dir .. "/" .. name
             local m = CoverCache.mtime(path)
@@ -170,9 +184,9 @@ end
 function CoverCache.clear(dir)
     local out = { removed = 0, bytes = 0, kept = 0, failed = 0 }
     if type(dir) ~= "string" or dir == "" then return out end
-    local ok, iter = pcall(lfs.dir, dir)
+    local ok, iter, dir_obj = pcall(lfs.dir, dir)   -- dir_obj 必须留着，见 stats 上方说明
     if not ok or not iter then return out end
-    for name in iter do
+    for name in iter, dir_obj do
         if name ~= "." and name ~= ".." and IMAGE_SUFFIX[CoverCache.suffix(name)] then
             local path = dir .. "/" .. name
             local size = H.file_size(path) or 0
@@ -256,12 +270,12 @@ function CoverCache.prune_minutes(dir, minutes, now)
     minutes = tonumber(minutes) or 0
     if minutes <= 0 then return out end
     if type(dir) ~= "string" or dir == "" then return out end
-    local ok, iter = pcall(lfs.dir, dir)
+    local ok, iter, dir_obj = pcall(lfs.dir, dir)   -- dir_obj 必须留着，见 stats 上方说明
     if not ok or not iter then return out end
 
     local t = tonumber(now) or os.time()
     local limit = minutes * CoverCache.MIN
-    for name in iter do
+    for name in iter, dir_obj do
         if name ~= "." and name ~= ".." and IMAGE_SUFFIX[CoverCache.suffix(name)] then
             local path = dir .. "/" .. name
             local m = CoverCache.mtime(path)

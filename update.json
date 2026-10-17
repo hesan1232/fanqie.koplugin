@@ -1,16 +1,16 @@
 {
-  "version": "2.16.15",
-  "name": "番茄小说 2.16.15",
+  "version": "2.16.16",
+  "name": "番茄小说 2.16.16",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.15/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.16/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.15/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.15/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.15/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.15/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.16/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.16/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.16/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.16/fanqie.koplugin.zip"
   ],
-  "size": 402012,
-  "sha256": "75f49b0e508e8ba8232486f07a98b683f792dcdccdf0447e0fccbe66f4218444",
-  "notes": "书城搜索只保留免登录端点：删掉「网页搜索优先、失败降级」整条路径（网页搜索要浏览器 SDK 本地生成的 s_v_web_id，扫码登录拿不到，每次搜索都白打一次注定失败的请求），现在直接走免签名端点，扫码登录甚至完全不登录都能搜；删掉「已自动改用免登录搜索」提示文案（只有一条路，不需要提示）；结果仍不含字数/在读/最新章，也不显示总数。顺带删除随之失效的 store_search_url / search_web / classify_search_error 与 describe_error 的 risk 分支。"
+  "size": 403935,
+  "sha256": "5d13ce2d97b170e33bbb7019102e9486ae865927b115cd900bfaffaf5e48ea67",
+  "notes": "**修「缓存管理三个『读取占用失败』」—— `lfs.dir` 丢了第二个返回值**\n\n用户反馈：缓存管理里三行占用（书架 / 书城 / 评论）全显示「（读取占用失败）」。\n\n- **根因**：`lfs.dir` 返回**两个**值 `(iter, dir_obj)`。KOReader 用的是标准\n  LuaFileSystem，它的 `dir_iter` 第一句就是 `luaL_checkudata(L, 1, DIR_METATABLE)` ——\n  **目录句柄是「泛型 for 的 state」，也就是第二个返回值**，不是迭代函数的 upvalue。\n  写成 `local ok, iter = pcall(lfs.dir, dir)` 再 `for name in iter do`，\n  state 就是 `nil`，第一轮迭代直接抛\n  `bad argument #1 to 'for iterator' (directory metatable expected, got nil)`。\n  KOReader 自己全项目统一是 `local ok, iter, dir_obj = pcall(lfs.dir, p)` +\n  `for f in iter, dir_obj do`（`frontend/util.lua:792`、`frontend/docsettings.lua:508`）。"
 }

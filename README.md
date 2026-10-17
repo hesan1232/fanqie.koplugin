@@ -539,6 +539,35 @@ A: 番茄网页接口把部分文案用私用区码位替换过，插件内置�
 
 ## 更新日志
 
+### v2.16.16
+
+**修「缓存管理三个『读取占用失败』」—— `lfs.dir` 丢了第二个返回值**
+
+用户反馈：缓存管理里三行占用（书架 / 书城 / 评论）全显示「（读取占用失败）」。
+
+- **根因**：`lfs.dir` 返回**两个**值 `(iter, dir_obj)`。KOReader 用的是标准
+  LuaFileSystem，它的 `dir_iter` 第一句就是 `luaL_checkudata(L, 1, DIR_METATABLE)` ——
+  **目录句柄是「泛型 for 的 state」，也就是第二个返回值**，不是迭代函数的 upvalue。
+  写成 `local ok, iter = pcall(lfs.dir, dir)` 再 `for name in iter do`，
+  state 就是 `nil`，第一轮迭代直接抛
+  `bad argument #1 to 'for iterator' (directory metatable expected, got nil)`。
+  KOReader 自己全项目统一是 `local ok, iter, dir_obj = pcall(lfs.dir, p)` +
+  `for f in iter, dir_obj do`（`frontend/util.lua:792`、`frontend/docsettings.lua:508`）。
+- **影响范围（全部一处不改）**：`CoverCache.stats / prune / clear / prune_minutes`
+  在设备上**恒等于什么都没做** —— 占用永远是 0、清空缓存报「0 张」、
+  封面与段评图永不过期；`get_cache_stats` 的统计行恒为「0 本书, 0 章节, 0.0 MB」。
+  v2.16.0 引入这个形态，v2.16.6 起缓存管理开始用它 ⇒ v2.16.12 那次
+  「缓存管理一打开就闪退」其实就是这三行文案抛错拖垮了整个子菜单。
+- **为什么之前两次都没抓到**：v2.16.13 的 pcall 兜底把异常变成了
+  「（读取占用失败）」这句文案（症状从「闪退」变成「三行失败」）；而回归里的
+  `lfs` 桩只返回**一个闭包**、也不校验 state ⇒ 错误形态照样跑通（假绿）。
+  本版把三处回归桩改成保真实现：返回 `(iter, dir_obj)`，`state` 不对就抛
+  `bad argument #1 to 'for iterator'`；并新增真实文件系统断言
+  （`stats` 数得准、`prune` 真删且只删过期、`clear` 真删、`prune_minutes` 同理）
+  + 全插件源码守卫（禁止 `pcall(lfs.dir` 丢 `dir_obj`、禁止 `for x in iter do`）。
+- **顺带**：`get_cache_stats` 里那句「尽力而为」的 pcall 保留（目录真读不了时
+  只降级成零统计，不再拖崩菜单），但现在它不再吞掉形态错误。
+
 ### v2.16.15
 
 **书城搜索只保留免登录端点，去掉所有提示文案**
