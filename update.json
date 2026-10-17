@@ -1,16 +1,16 @@
 {
-  "version": "2.16.19",
-  "name": "番茄小说 2.16.19",
+  "version": "2.16.20",
+  "name": "番茄小说 2.16.20",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.19/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.20/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.19/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.19/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.19/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.19/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.20/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.20/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.20/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.20/fanqie.koplugin.zip"
   ],
-  "size": 408208,
-  "sha256": "ce29d45f0afdfa95be5fc2aea1897e9d75d8735bfc3bfac02ce18148b86f70e0",
-  "notes": "- **修「离线阅读后开书跳回旧章节」**：云端进度/书架缓存还停在上次联网的位置\n  （比如 100 章），而你离线已经读到 103 章 —— 从书架（或书城）再进这本书时会回到\n  100 章。现在开书定位会把**本地更靠后的进度**（离线积压在待上传队列里的章、本次\n  会话正在读的章）一起比较，取最靠后的：云端 100、本地 103 ⇒ 进 103 章；反过来\n  你在手机 App 上读到 105 ⇒ 仍用云端的 105，两边都不丢。\n- 待上传进度超过 7 天或超过 100 条时仍按原策略丢弃（目录可能已变化，重试无意义）。"
+  "size": 409952,
+  "sha256": "6f974e05ee153e34fab07bc2960803e524b6d86259d93db8580f03ef90fe689b",
+  "notes": "- **开书更快：有缓存就先进阅读，目录在后台静默刷新**。旧策略是「只要有网络，\n  每次开书都等云端目录拉完才进书」，网络慢时每次都白等一轮。现在：\n  - 有目录缓存 ⇒ **立即进阅读**（定位逻辑不变），同时后台拉一次云端目录与阅读进度；\n  - 后台刷新**只写缓存**，不动正在阅读的章索引（翻章不会错位）；拉新章节成功后\n    下次开书就能看到，阅读中会提示「目录已更新：新增 N 章」（仅限当前正在读番茄书）；\n  - 后台发现**云端进度比本机更靠后**（比如在 App 上读到了更后面的章）⇒ 记下来，\n    下次进入这本书时直接跳过去，并提示一次；\n  - 拉取失败或拉到空（如 Cookie 过期）⇒ 一切照旧，静默保留旧缓存，不打断阅读。\n- 无缓存的次序不变：没网提示联网；有网走「等目录」的老路。"
 }

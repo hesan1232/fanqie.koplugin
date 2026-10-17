@@ -262,7 +262,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.19",
+    version = Info and Info.version or "2.16.20",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -5463,6 +5463,80 @@ function FanQiePlugin:_openBookWithCache(book, cached_chapters)
     self:openChapter(book, cached_chapters, start_index)
 end
 
+-- 后台静默刷新目录：开书走了缓存快路径后，仍在后台拉一次云端目录与阅读进度，
+-- 让新章节与「在 App 上读到更靠后」这两件事不被错过。只写目录缓存与内存目录，
+-- 绝不动 current_chapters（阅读中的章索引必须保持稳定，否则翻章会错位）。
+-- 失败或拉到空（如 Cookie 过期）一律静默保留旧缓存，不打断阅读。
+-- @param old_count number 开书时手里缓存目录的章数（用于提示新增章节）
+function FanQiePlugin:_refreshCatalogInBackground(book, old_count)
+    if self._catalog_refreshing then return end
+    self._catalog_refreshing = true
+    local client = self.client
+    local settings = self.settings
+    local book_id = book.book_id
+    local pull_progress = settings:get("sync", {}).pull_on_open ~= false
+
+    Async.run(function()
+        local b = { book_id = book_id }
+        local fetched = Content.fetch_catalog(client, b)
+        local progress = nil
+        if pull_progress then
+            local ok_p, p = pcall(function() return client:fetch_read_progress() end)
+            if ok_p then progress = p end
+        end
+        return { chapters = fetched, progress = progress }
+    end, function(ok, result, err)
+        self._catalog_refreshing = false
+        if not ok or type(result) ~= "table" then
+            if Log then Log.warn("catalog bg: refresh failed, keep old cache", tostring(err)) end
+            return
+        end
+        local chapters = result.chapters
+        if not chapters or #chapters == 0 then
+            if Log then Log.warn("catalog bg: fetched empty chapters, keep old cache") end
+            return
+        end
+
+        -- 新目录落缓存（不回填 current_chapters，避免阅读中索引错位）
+        Content.save_catalog_cache(settings, book_id, chapters)
+        _state.setDirectoryCache(book_id, chapters)
+
+        -- 云端进度比本机更靠后：记到 cloud_ahead，下次开书定位生效
+        if result.progress and result.progress.data then
+            for _, item in ipairs(result.progress.data) do
+                if tostring(item.book_id or item.bookId) == tostring(book_id) then
+                    local target_item_id = tostring(item.item_id or item.itemId or "")
+                    if target_item_id ~= "" then
+                        local cloud_idx = nil
+                        for idx, ch in ipairs(chapters) do
+                            if tostring(ch.itemId or ch.item_id) == target_item_id then
+                                cloud_idx = idx
+                                break
+                            end
+                        end
+                        -- skip_cloud=true：别把已有标记算进「本机进度」跟自己比
+                        local local_idx = _state.localLatestChapterIndex(book_id, #chapters, true)
+                        if cloud_idx and (not local_idx or cloud_idx > local_idx) then
+                            _state.markCloudAhead(book_id, cloud_idx)
+                            if Log then Log.info("catalog bg: cloud ahead at chapter ", cloud_idx) end
+                            if self:isCurrentDocFanqie() then
+                                self:showInfo(T(_("检测到云端进度在第 %1 章，下次进入本书时会跳过去"), cloud_idx))
+                            end
+                        end
+                    end
+                    break
+                end
+            end
+        end
+
+        -- 新增章节：只提示一次，不弹目录
+        local added = old_count and (#chapters - old_count) or 0
+        if added > 0 and self:isCurrentDocFanqie() then
+            self:showInfo(T(_("目录已更新：新增 %1 章"), added))
+        end
+    end, { poll_interval = 0.3, timeout = 30, tag = "catalog_bg" })
+end
+
 function FanQiePlugin:openBook(book)
     if not self.patches_ok then
         Patches.install()
@@ -5483,6 +5557,17 @@ function FanQiePlugin:openBook(book)
     if has_cache and not self:checkNetwork() then
         if Log then Log.info("openBook: offline mode, using cached chapters") end
         self:_openBookWithCache(book, cached_chapters)
+        return
+    end
+
+    -- 有缓存 + 有网络：缓存快路径 —— 先立即进阅读，后台静默刷新目录。
+    -- 旧策略是「有网必等云端目录」，每次开书都要白等一轮网络；
+    -- 新章节靠后台刷新写缓存，云端更靠后的进度由 _refreshCatalogInBackground
+    -- 记到 cloud_ahead，下次开书定位时生效。
+    if has_cache then
+        if Log then Log.info("openBook: cache fast path, background refresh") end
+        self:_openBookWithCache(book, cached_chapters)
+        self:_refreshCatalogInBackground(book, #cached_chapters)
         return
     end
 

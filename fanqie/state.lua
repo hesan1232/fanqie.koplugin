@@ -7,6 +7,10 @@ local M = {
     current_document_path = nil,
     cached_directory = nil,
     pending_progress = {},
+    -- 云端进度比本机更靠后的登记（book_id → 1-based 章号）。后台刷新目录时
+    -- 发现云端读得更靠后（比如在 App 上读了）就记在这里：下次开书定位把它
+    -- 当第三来源取 max，本机进度一旦超过它就自然被盖过去（只增不减也安全）。
+    cloud_ahead = {},
     last_progress_report = {},
     -- 阅读中定期上传的定时器开关 / 代际 token。
     -- 切章会重建 ReaderUI（连带插件实例），定时器链必须靠 token 认出「我已被换掉」，
@@ -345,8 +349,10 @@ end
 --
 -- @param book_id string|number 要开的书
 -- @param total number|nil 目录总章数（nil = 不夹紧；给了就夹到 [1, total]）
+-- @param skip_cloud boolean|nil true = 不纳入 cloud_ahead（后台刷新判定
+--   「云端是否真的比本机靠后」时用，否则已有标记会让自己跟自己比）
 -- @return number|nil
-function M.localLatestChapterIndex(book_id, total)
+function M.localLatestChapterIndex(book_id, total, skip_cloud)
     if book_id == nil then return nil end
     local id = tostring(book_id)
     local latest = nil
@@ -368,7 +374,26 @@ function M.localLatestChapterIndex(book_id, total)
     if path and M.book_id_from_path and M.book_id_from_path(path) == id then
         consider(M.current_chapter_index)
     end
+    -- ③ 云端进度更靠后的登记（后台目录刷新时写入；本机一旦读过更后面，
+    --    ①② 自然盖过它 —— max 语义下只增不减也安全）
+    if not skip_cloud then
+        consider(M.cloud_ahead and M.cloud_ahead[id] or nil)
+    end
     return latest
+end
+
+--- 登记云端进度更靠后的章（幂等取大）。
+-- @param book_id string|number
+-- @param idx number 1-based 章号
+function M.markCloudAhead(book_id, idx)
+    if book_id == nil then return end
+    idx = tonumber(idx)
+    if not idx or idx < 1 then return end
+    local id = tostring(book_id)
+    local cur = tonumber(M.cloud_ahead[id])
+    if not cur or idx > cur then
+        M.cloud_ahead[id] = idx
+    end
 end
 
 M.setLastProgressReport = function(item_id, progress)
