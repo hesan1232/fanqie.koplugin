@@ -251,6 +251,10 @@ function CommentView:_append_block(group, block, content_w, indent)
             -- 一级评论与回复正文**同色**：以前回复是 DARK_GRAY，用户看着像
             -- "二级评论没显示"（灰字在墨水屏上对比度低、跟"已读/禁用"一个观感）。
             -- 层次交给左缩进 + 小字号 + 头行加粗区分，不靠颜色深浅。
+            -- 🔴 **不要写「夜间白字」分支**：KOReader 的夜间模式是整屏 framebuffer
+            --    反色（Kobo MTK 直接写 /proc/hwtcon/cmd 的 night_mode），不是换主题色；
+            --    这里写黑，夜间会被反成白字；真写成 COLOR_WHITE 反而反成黑字看不见。
+            --    TextBoxWidget 自己的默认 fgcolor 也是 COLOR_BLACK（同理）。
             fgcolor = Blitbuffer.COLOR_BLACK,
         }
     end
