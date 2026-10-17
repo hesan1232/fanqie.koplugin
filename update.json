@@ -1,16 +1,16 @@
 {
-  "version": "2.16.14",
-  "name": "番茄小说 2.16.14",
+  "version": "2.16.15",
+  "name": "番茄小说 2.16.15",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.14/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.15/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.14/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.14/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.14/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.14/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.15/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.15/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.15/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.15/fanqie.koplugin.zip"
   ],
-  "size": 403481,
-  "sha256": "aa6b20bfc36d3005f136fed4963ca29cd1a8a16cf4a14a3f82fa12023e659136",
-  "notes": "评论底部拆两行：统计行（赞/回复数/时间）灰色纯信息；折叠标记（展开 N 条回复 / 收起回复）改用正文色并单独一行，紧贴回复树；「… 还有 N 条回复」同步改黑（可操作行统一黑色，灰=信息）。交互不变：点折叠行仍是展开/收起。"
+  "size": 402012,
+  "sha256": "75f49b0e508e8ba8232486f07a98b683f792dcdccdf0447e0fccbe66f4218444",
+  "notes": "书城搜索只保留免登录端点：删掉「网页搜索优先、失败降级」整条路径（网页搜索要浏览器 SDK 本地生成的 s_v_web_id，扫码登录拿不到，每次搜索都白打一次注定失败的请求），现在直接走免签名端点，扫码登录甚至完全不登录都能搜；删掉「已自动改用免登录搜索」提示文案（只有一条路，不需要提示）；结果仍不含字数/在读/最新章，也不显示总数。顺带删除随之失效的 store_search_url / search_web / classify_search_error 与 describe_error 的 risk 分支。"
 }

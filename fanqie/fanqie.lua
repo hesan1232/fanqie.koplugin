@@ -169,25 +169,11 @@ function FanQie.store_library_url(opts)
     return FanQie.BASE_URL .. "/api/library/book_list?" .. table.concat(parts, "&")
 end
 
--- 网页搜索（明文无 PUA）。⚠️ 实测**必须带 cookie**：无 cookie 返回
--- HTTP 200 + 0 字节；**不需要 a_bogus**。
-function FanQie.store_search_url(keyword, opts)
-    opts = opts or {}
-    local parts = {
-        "filter=" .. (opts.filter or "127%2C127%2C127%2C127"),
-        "page_count=" .. tostring(opts.page_count or 10),
-        "page_index=" .. tostring(opts.page_index or 0),
-        "query_type=0",
-        "query_word=" .. H.url_encode(keyword or ""),
-    }
-    return FanQie.BASE_URL .. "/api/author/search/search_book/v1?" .. table.concat(parts, "&")
-end
-
 -- ===========================================================================
 -- 免登录搜索（头条系小说搜索端点 novel.snssdk.com）
 -- ===========================================================================
--- 🔴 为什么需要它：网页搜索 `store_search_url` 真正要的是**风控标识 `s_v_web_id`**，
---    而不是登录态。该标识由浏览器安全 SDK **本地随机生成**（番茄首页挂的
+-- 🔴 为什么**只**走这个端点（v2.16.15 起网页搜索路径已删除）：网页搜索要的是
+--    **风控标识 `s_v_web_id`**，而不是登录态。该标识由浏览器安全 SDK **本地随机生成**（番茄首页挂的
 --    `…/sec_sdk_build/3.8.0/captcha/index.js` 里写得很清楚：
 --      ALPHA = "0123456789A-Za-z"; n = Date.now().toString(36);
 --      r = 36 位随机（r[8]=r[13]=r[18]=r[23]="_"、r[14]="4"、r[19]∈{8,9,A,B}）
@@ -200,7 +186,7 @@ end
 --          把自造值先带去首页、带去埋点上报走一趟 → 再搜仍空。
 --    ⇒ 没在**浏览器**里打开过番茄的机器，永远拿不到可用的 `s_v_web_id`。
 --
---    所以搜索改走这个端点：只要 aid / offset / q 三个参数，
+--    所以搜索**只**走这个端点（网页路径已于 v2.16.15 删除）：只要 aid / offset / q 三个参数，
 --    **免签名、免 cookie、免风控标识**，扫码登录（或干脆不登录）都能搜。
 --
 -- 🔴 实测（2026-10-16）：
