@@ -262,7 +262,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.18",
+    version = Info and Info.version or "2.16.19",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -5437,6 +5437,13 @@ function FanQiePlugin:_openBookWithCache(book, cached_chapters)
             end
         end
     end
+    -- 🔴 本地更靠后的进度压过书架缓存（离线阅读回跳修复）：`book.item_id` 只表示
+    --    云端/书架进度（本地从不写），离线读过的章节全在 pending 落盘里 ——
+    --    不比一下就会跳回上次联网时的章。与 openBook 有网分支同口径。
+    local local_idx = _state.localLatestChapterIndex(book.book_id, #cached_chapters)
+    if local_idx and local_idx > start_index then
+        start_index = local_idx
+    end
     -- 如果上次阅读的章节没有缓存，向后找第一个有缓存的章节
     local chapter_cache = Content.load_cache_index(self.settings, book.book_id)
     if chapter_cache then
@@ -5564,6 +5571,14 @@ function FanQiePlugin:openBook(book)
             if start_index > 1 and Log then
                 Log.info("openBook: cloud progress miss, fallback to book.item_id, start_index=" .. start_index)
             end
+        end
+
+        -- 🔴 本地更靠后的进度压过云端（离线阅读回跳修复）：离线读到 103 章时
+        --    云端/书架缓存还停在 100，只看云端就会跳回 100 章。取 max 两头都不丢 ——
+        --    反过来云端更新（比如在 App 上读到 105）时仍是云端赢。
+        local local_idx = _state.localLatestChapterIndex(book_id, #chapters)
+        if local_idx and local_idx > start_index then
+            start_index = local_idx
         end
 
         if start_index > #chapters then

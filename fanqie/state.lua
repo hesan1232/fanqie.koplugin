@@ -328,6 +328,49 @@ M.clearAllPendingProgress = function()
     M.pending_progress = {}
 end
 
+--- 本地最靠后的已读章（1-based），没有本地依据时返回 nil。
+--
+-- 🔴 为什么需要它（开书定位回跳的根因）：离线读到 103 章 ⇒ 101~103 的上传全在
+--    pending 里没传上去，云端与书架缓存都还停在 100；开书定位若只看云端/书架缓存，
+--    就会跳回 100 章（离线分支用 `book.item_id`，同样停在 100 —— 这个字段本地
+--    从不写、只表示云端进度）。所以定位时必须把本地依据一起比，取最靠后的。
+--
+-- 两路来源：
+--   ① `pending_progress` 里这本书没传成功的进度（`chapter_idx` 是 0-based，转 1-based）；
+--   ② 本次会话正在读的这本书的 `current_chapter_index`。
+--     🔴 不能直接用 `current_book.book_id == book_id` 判「正在读这本书」：
+--        `openBook` 一进来就把 `current_book` 换成了新书，而 `current_chapter_index`
+--        还是**上一本书**的章号 —— 章号归属于哪本书，只能由文档路径反查
+--        （`book_id_from_path`，路径里编着 book_id）。
+--
+-- @param book_id string|number 要开的书
+-- @param total number|nil 目录总章数（nil = 不夹紧；给了就夹到 [1, total]）
+-- @return number|nil
+function M.localLatestChapterIndex(book_id, total)
+    if book_id == nil then return nil end
+    local id = tostring(book_id)
+    local latest = nil
+    local function consider(idx)
+        idx = tonumber(idx)
+        if idx and idx >= 1 and (total == nil or idx <= total)
+            and (latest == nil or idx > latest) then
+            latest = idx
+        end
+    end
+    -- ① pending 里这本书的待传进度（0-based → 1-based）
+    for _, item in pairs(M.pending_progress or {}) do
+        if type(item) == "table" and tostring(item.book_id) == id then
+            consider(item.chapter_idx and (tonumber(item.chapter_idx) + 1) or nil)
+        end
+    end
+    -- ② 本次会话正在读的这本书（归属由文档路径证明，见上）
+    local path = M.current_document_path
+    if path and M.book_id_from_path and M.book_id_from_path(path) == id then
+        consider(M.current_chapter_index)
+    end
+    return latest
+end
+
 M.setLastProgressReport = function(item_id, progress)
     M.last_progress_report[item_id] = {
         progress = progress,

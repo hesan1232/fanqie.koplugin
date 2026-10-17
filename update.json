@@ -1,16 +1,16 @@
 {
-  "version": "2.16.18",
-  "name": "番茄小说 2.16.18",
+  "version": "2.16.19",
+  "name": "番茄小说 2.16.19",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.18/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.19/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.18/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.18/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.18/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.18/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.19/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.19/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.19/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.19/fanqie.koplugin.zip"
   ],
-  "size": 406831,
-  "sha256": "e6f8ef16f5316de0c79144dd5745ac0771a462cd177c9ecec74c840371d9991b",
-  "notes": "- **部署自证**：如果你更新后看到的现象和更新前一模一样（比如「标签还在章节数下面」），\n  先打开插件菜单 → **关于**，看有没有一行「**cover_cell 构建 20261017a**」：\n  - 有，且构建号是新的 ⇒ 设备上跑的就是新代码；\n  - 没有，或构建号是旧的 ⇒ **设备上的 `fanqie/cover_cell.lua` 没有被替换成功**\n    （解压/覆盖环节的问题，zip 本身没问题）。处理：把设备上整个 `fanqie.koplugin`\n    目录**删掉再解压**，然后完全重启 KOReader。\n- 封面网格的徽章叠加路径加了一条诊断日志（`[网格] 徽章叠加 tag=… offset=… build=…`），\n  供日志定位用。"
+  "size": 408208,
+  "sha256": "ce29d45f0afdfa95be5fc2aea1897e9d75d8735bfc3bfac02ce18148b86f70e0",
+  "notes": "- **修「离线阅读后开书跳回旧章节」**：云端进度/书架缓存还停在上次联网的位置\n  （比如 100 章），而你离线已经读到 103 章 —— 从书架（或书城）再进这本书时会回到\n  100 章。现在开书定位会把**本地更靠后的进度**（离线积压在待上传队列里的章、本次\n  会话正在读的章）一起比较，取最靠后的：云端 100、本地 103 ⇒ 进 103 章；反过来\n  你在手机 App 上读到 105 ⇒ 仍用云端的 105，两边都不丢。\n- 待上传进度超过 7 天或超过 100 条时仍按原策略丢弃（目录可能已变化，重试无意义）。"
 }
