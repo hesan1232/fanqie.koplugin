@@ -33,7 +33,8 @@ data 结构（main.lua 组装，见 _renderParaReviewView）：
   comments = {
     {
       head  = "1. 名字",                       -- 头行（加粗；v2.16.11 只留序号+用户名）
-      foot  = "赞 3 · 回复 5   ［展开 5 条回复］", -- 统计行（灰字小号，正文下方；含折叠标记）
+      foot  = "赞 3 · 回复 5   2026-10-17 12:00", -- 统计行（灰字小号，正文下方；**纯信息**）
+      fold  = "展开 5 条回复",                   -- 折叠标记（正文色、单独一行、可点；「收起回复」反之）
       text  = "正文……",
       images = { { path = "/…/c_xx_1.webp", w = 240, h = 240,    -- 已下载
                    img_no = 1, tap = { no = 1, img = 1 } },
@@ -323,10 +324,8 @@ function CommentView:_append_block(group, block, content_w, indent)
         end
     end
 
-    -- 统计行（v2.16.11）：「赞N · 回复N  时间 ［展开 N 条回复］/［收起］」
-    -- 灰字小号，跟在正文/图片之后 —— 用户报头行太挤（日期/赞/回复数全塞第一行）；
-    -- 折叠标记也在这行尾（v2.16.8 删过头行标记后可发现性归零）。
-    -- 与「头行+正文」同一个 tap 载荷：点整行（含标记）就能展开/收起。
+    -- 统计行（v2.16.11 引入，v2.16.14 只留纯信息）：「赞N · 回复N  时间」
+    -- 灰字小号，跟在正文/图片之后 —— 用户报头行太挤（日期/赞/回复数全塞第一行）。
     if type(block.foot) == "string" and block.foot ~= "" then
         local foot = TextBoxWidget:new{
             text = block.foot,
@@ -340,6 +339,27 @@ function CommentView:_append_block(group, block, content_w, indent)
             inner[#inner + 1] = self:_wrap_tappable(foot, block.tap, self.on_block_tap)
         else
             inner[#inner + 1] = foot
+        end
+    end
+
+    -- 折叠标记（v2.16.14）：「展开 N 条回复」/「收起回复」
+    -- 🔴 单独一行 + **正文色（黑）**，不再挤在灰字统计行尾 —— 用户：「时间、回复数、
+    --    点赞数应该是灰色，展开 m 条回复应该是白色，展开 n 条回复应该单独开一行」。
+    --    灰=信息、黑=可操作，两者混在一行时既难扫读、也看不出哪半截能点。
+    --    紧贴回复树（在它上面一行），点了就是展开/收起这棵树。
+    if type(block.fold) == "string" and block.fold ~= "" then
+        local fold = TextBoxWidget:new{
+            text = block.fold,
+            face = Font:getFace("xx_smallinfofont", FONT_NOTE),
+            width = text_w,
+            alignment = "left",
+            fgcolor = Blitbuffer.COLOR_BLACK,
+        }
+        inner[#inner + 1] = VerticalSpan:new{ width = Screen:scaleBySize(2) }
+        if block.tap ~= nil and self.on_block_tap ~= nil then
+            inner[#inner + 1] = self:_wrap_tappable(fold, block.tap, self.on_block_tap)
+        else
+            inner[#inner + 1] = fold
         end
     end
 
@@ -396,7 +416,10 @@ function CommentView:_build_content(content_w)
                 face = Font:getFace("xx_smallinfofont", FONT_NOTE),
                 width = content_w,
                 alignment = "left",
-                fgcolor = Blitbuffer.COLOR_DARK_GRAY,
+                -- v2.16.14：与「展开 N 条回复」同一条规矩 —— **可操作的行用正文色**，
+                -- 只有纯信息（赞/回复数/时间）才灰。以前这里也是灰字，用户看着分不清
+                -- 哪一行能点。
+                fgcolor = Blitbuffer.COLOR_BLACK,
             }
             -- 这一行**单独可点**（与「头行+正文」的开关分开：展开 ≠ 加载更多）
             group[#group + 1] = self:_wrap_tappable(note, c.more_tap, self.on_block_tap)

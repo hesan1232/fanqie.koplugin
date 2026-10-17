@@ -262,7 +262,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.13",
+    version = Info and Info.version or "2.16.14",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -1047,12 +1047,14 @@ local function append_comment_lines(number, comment, expanded)
     local ts = fmt_comment_time(comment.create_time)
     local foot = T(_("赞%1 · 回复%2"), tostring(likes), tostring(replies))
     if ts ~= "" then foot = foot .. "  " .. ts end
-    if expanded then
-        foot = foot .. _("   ［收起］")
-    elseif replies > 0 then
-        foot = foot .. T(_("   ［展开 %1 条回复］"), tostring(replies))
-    end
     out[#out + 1] = foot
+    -- v2.16.14 与主路径同口径：折叠标记单独一行（纯文本回退路径没有颜色可言，
+    -- 但仍然不许跟统计挤在同一行）。
+    if expanded then
+        out[#out + 1] = _("收起回复")
+    elseif replies > 0 then
+        out[#out + 1] = T(_("展开 %1 条回复"), tostring(replies))
+    end
     local note = comment_image_note(comment_images(comment))
     if note then
         out[#out + 1] = note
@@ -1560,17 +1562,19 @@ function FanQiePlugin:_renderParaReviewView(in_place)
         --（用户报「第一行东西太多」），全部挪到**正文下面**的统计行 foot。
         local head = T(_("%1. %2%3"), tostring(i),
             user, comment_titles_text(comment))
-        -- 统计行（comment_view 渲染成灰字小号，紧跟在正文/图片之后）：
-        --   赞N · 回复N  时间   ［展开 N 条回复］/［收起］
-        -- v2.16.8 删过头行折叠标记，结果可发现性归零（用户找不到了）——
-        -- 本版随统计行一起恢复：标记写在这行尾，点整行（含标记）即可展开/收起。
+        -- 统计行（comment_view 渲染成灰字小号，紧跟在正文/图片之后）：赞N · 回复N  时间
+        -- v2.16.14：折叠标记**从这行里分出去**（用户：「时间、回复数、点赞数应该是灰色，
+        -- 展开 m 条回复应该是白色，展开 n 条回复应该单独开一行」）—— 统计是信息（灰），
+        -- 展开/收起是操作（正文色、单独一行、紧贴回复树）。
         local ts = fmt_comment_time(comment.create_time)
         local foot = T(_("赞%1 · 回复%2"), tostring(likes), tostring(replies))
         if ts ~= "" then foot = foot .. "  " .. ts end
+        -- 折叠标记（nil = 该条没有回复、也没展开 ⇒ 不显示这一行）
+        local fold
         if expanded then
-            foot = foot .. _("   ［收起］")
+            fold = _("收起回复")
         elseif replies > 0 then
-            foot = foot .. T(_("   ［展开 %1 条回复］"), tostring(replies))
+            fold = T(_("展开 %1 条回复"), tostring(replies))
         end
 
         local imgs, missing = view_image_entries(self, comment, i, true)
@@ -1618,6 +1622,7 @@ function FanQiePlugin:_renderParaReviewView(in_place)
             no = i,
             head = head,
             foot = foot,
+            fold = fold,
             text = tostring(comment.text or ""),
             images = imgs,
             replies = rc,
