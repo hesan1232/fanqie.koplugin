@@ -1,16 +1,16 @@
 {
-  "version": "2.16.12",
-  "name": "番茄小说 2.16.12",
+  "version": "2.16.13",
+  "name": "番茄小说 2.16.13",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.12/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.13/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.12/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.12/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.12/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.12/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.13/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.13/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.13/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.13/fanqie.koplugin.zip"
   ],
-  "size": 399969,
-  "sha256": "ecdd7d2d12d8da4597c88894c255e4a1efdb02b532e972756b4545f25bb685ac",
-  "notes": "修「评论能显示、回复只有一大块空白」：回复块缩进包装 HorizontalGroup 误用 VerticalGroup 的 align=\"left\"（HorizontalGroup 只认 center/top/bottom，非法值=零绘制但照占高度）。v2.16.0 起所有回复块从未渲染。改为 top + 回归补绘制语义桩与 8 条断言。"
+  "size": 402461,
+  "sha256": "d84b8663a9c1efadd5a648305711c3578f1c453f709effa272b3a0decb2612e6",
+  "notes": "修「缓存管理一打开就闪退」：缓存统计调用 Settings:get_cache_stats 双层裸遍历目录，任何一次 lfs.dir/lfs.attributes 失败即抛错，而它是菜单第一行 => 整个子菜单构建失败（设备上等于闪退、无提示）。改为尽力而为（顶层+逐书 pcall，读不了的书跳过）+ 每项文案单独兜底 + 整菜单 pcall 闸门，失败降级成可读提示并写 fanqie.log WARN；顺带修 covers/store_covers/comment_images 被统计成「书」。回复正文改为与一级评论同色（原深灰，墨水屏上像已读/禁用）。"
 }

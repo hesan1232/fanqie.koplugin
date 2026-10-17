@@ -248,7 +248,10 @@ function CommentView:_append_block(group, block, content_w, indent)
             face = Font:getFace("x_smallinfofont", FONT_BODY),
             width = text_w,
             alignment = "left",
-            fgcolor = indent and Blitbuffer.COLOR_DARK_GRAY or Blitbuffer.COLOR_BLACK,
+            -- 一级评论与回复正文**同色**：以前回复是 DARK_GRAY，用户看着像
+            -- "二级评论没显示"（灰字在墨水屏上对比度低、跟"已读/禁用"一个观感）。
+            -- 层次交给左缩进 + 小字号 + 头行加粗区分，不靠颜色深浅。
+            fgcolor = Blitbuffer.COLOR_BLACK,
         }
     end
 

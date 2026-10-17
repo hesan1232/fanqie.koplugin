@@ -421,6 +421,15 @@ function Settings:clear_all_cache()
     return true
 end
 
+-- 缓存根目录下**不是书**的子目录：covers/ store_covers/（封面）与
+-- comment_images/（段评图片）都建在下载目录里，遍历统计时必须跳过，
+-- 否则「缓存统计: N 本书」会把它们各算成一本（用户看到的书数虚高）。
+local NON_BOOK_DIRS = {
+    covers = true,
+    store_covers = true,
+    comment_images = true,
+}
+
 function Settings:get_cache_stats()
     local lfs = require("libs/libkoreader-lfs")
     local stats = {
@@ -431,32 +440,47 @@ function Settings:get_cache_stats()
     if not H.dir_exists(self.cache_dir) then
         return stats
     end
-    for entry in lfs.dir(self.cache_dir) do
-        if entry ~= "." and entry ~= ".." then
-            local full_path = H.join_path(self.cache_dir, entry)
-            local mode = lfs.attributes(full_path, "mode")
-            if mode == "directory" then
-                stats.book_count = stats.book_count + 1
-                local book_size = 0
-                local chapter_count = 0
-                for file_entry in lfs.dir(full_path) do
-                    if file_entry ~= "." and file_entry ~= ".." then
-                        local file_path = H.join_path(full_path, file_entry)
-                        local file_mode = lfs.attributes(file_path, "mode")
-                        if file_mode == "file" then
-                            local size = lfs.attributes(file_path, "size") or 0
-                            book_size = book_size + size
-                            if file_path:match("%.html$") then
-                                chapter_count = chapter_count + 1
+    -- 🔴 遍历必须「尽力而为」，**不许向外抛**：调用方是「缓存管理」子菜单的
+    --    第一行，任何一次 `lfs.dir` / `lfs.attributes` 失败（目录被删到一半、
+    --    权限、坏项、遍历途中被外部改动）都会让整个菜单构建失败 ——
+    --    设备上就是「一打开缓存管理就闪退」，且没有任何可读提示。
+    --    旧实现是裸 `lfs.dir` + 裸双层循环，零容错；而回归里 settings 一直被
+    --    整体桩掉（Python 侧构造 get_cache_stats），这条路径从未被真实执行过。
+    local ok_top, iter = pcall(lfs.dir, self.cache_dir)
+    if not ok_top or type(iter) ~= "function" then
+        return stats
+    end
+    pcall(function()
+        for entry in iter do
+            if entry ~= "." and entry ~= ".." then
+                local full_path = H.join_path(self.cache_dir, entry)
+                local mode = lfs.attributes(full_path, "mode")
+                if mode == "directory" and not NON_BOOK_DIRS[entry] then
+                    -- 单本书同样可能读不了：这本书跳过，已统计到的部分保留
+                    local ok_book, book_size, chapters = pcall(function()
+                        local size, count = 0, 0
+                        for file_entry in lfs.dir(full_path) do
+                            if file_entry ~= "." and file_entry ~= ".." then
+                                local file_path = H.join_path(full_path, file_entry)
+                                if lfs.attributes(file_path, "mode") == "file" then
+                                    size = size + (lfs.attributes(file_path, "size") or 0)
+                                    if file_path:match("%.html$") then
+                                        count = count + 1
+                                    end
+                                end
                             end
                         end
+                        return size, count
+                    end)
+                    if ok_book then
+                        stats.book_count = stats.book_count + 1
+                        stats.total_size = stats.total_size + (book_size or 0)
+                        stats.chapter_count = stats.chapter_count + (chapters or 0)
                     end
                 end
-                stats.total_size = stats.total_size + book_size
-                stats.chapter_count = stats.chapter_count + chapter_count
             end
         end
-    end
+    end)
     return stats
 end
 

@@ -262,7 +262,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.12",
+    version = Info and Info.version or "2.16.13",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -2138,7 +2138,21 @@ function FanQiePlugin:getMainMenuItems()
         {
             text = _("缓存管理"),
             sub_item_table_func = function()
-                return self:getCacheMenuItems()
+                -- 🔴 兜底闸门：这个子菜单要读文件系统（缓存目录遍历 / 占用统计 /
+                --    段评图片目录），任何一项抛错都会让 `Menu` 构建失败 ——
+                --    在设备上表现为「点开缓存管理就闪退」，且没有任何可读提示。
+                --    这里把异常降级成一行可读文案 + fanqie.log 里一条 WARN。
+                local ok, items = pcall(self.getCacheMenuItems, self)
+                if ok and type(items) == "table" then return items end
+                if Log then Log.warn("[缓存管理] 菜单构建失败: " .. tostring(items)) end
+                local msg = tostring(items):match("^[^\n]*") or ""
+                if #msg > 120 then msg = msg:sub(1, 120) end
+                return {
+                    {
+                        text = T(_("缓存管理加载失败：%1"), msg),
+                        enabled = false,
+                    },
+                }
             end,
         },
         {
@@ -4868,11 +4882,37 @@ end
 
 function FanQiePlugin:getCacheMenuItems()
     local items = {}
-    local stats = self.settings:get_cache_stats()
-    local size_mb = stats.total_size / (1024 * 1024)
+    -- 🔴 统计**绝不能**把整个菜单拖崩：`Settings:get_cache_stats()` 会双层遍历
+    --    缓存目录（145 本书 × 每章一个 html），任何一次 `lfs.dir` 失败
+    --    （目录删到一半 / 权限 / 坏项 / 中途被别的进程动过）都会抛错，
+    --    而它是本菜单的**第一行** ⇒ 整个子菜单构建失败 = 用户看到的
+    --    「缓存管理一打开就闪退」。降级成零值，菜单照常可用。
+    local ok_stats, stats = pcall(function() return self.settings:get_cache_stats() end)
+    if not ok_stats or type(stats) ~= "table" then
+        if Log then Log.warn("[缓存管理] get_cache_stats 失败，降级为零统计: " .. tostring(stats)) end
+        stats = { book_count = 0, chapter_count = 0, total_size = 0, degraded = tostring(stats) }
+    end
+    local book_count = tonumber(stats.book_count) or 0
+    local chapter_count = tonumber(stats.chapter_count) or 0
+    local total_size = tonumber(stats.total_size) or 0
+    local size_mb = total_size / (1024 * 1024)
+
+    -- text_func 求值失败同样会让菜单构建抛错（闪退）⇒ 统一兜底成一行可读文案，
+    -- 并把真实原因写进 fanqie.log（设备侧唯一的可诊断线索）。
+    local function safe_label(fn)
+        local function render()
+            local ok, text = pcall(fn)
+            if ok and type(text) == "string" then return text end
+            if Log then Log.warn("[缓存管理] 占用文案求值失败: " .. tostring(text)) end
+            return _("（读取占用失败）")
+        end
+        return render
+    end
 
     table.insert(items, {
-        text = string.format(_("缓存统计: %d 本书, %d 章节, %.1f MB"), stats.book_count, stats.chapter_count, size_mb),
+        text = stats.degraded
+            and _("缓存统计: 暂不可用（读取缓存目录失败）")
+            or string.format(_("缓存统计: %d 本书, %d 章节, %.1f MB"), book_count, chapter_count, size_mb),
         -- 纯展示行（见下方 Menu 的字段名说明）：Menu 只认 select_enabled/select_enabled_func
         select_enabled = false,
     })
@@ -4915,11 +4955,11 @@ function FanQiePlugin:getCacheMenuItems()
     -- 书城缓存 = 榜单短缓存（内存）+ 书城封面（store_covers/）。
     -- 两者拆开是因为目录本来就分开（covers/ vs store_covers/），用户经常只想清一边。
     table.insert(items, {
-        text_func = function()
+        text_func = safe_label(function()
             local bytes = self:_shelfCacheBytes()
             return T(_("清空书架缓存（书单 + 封面 · %1）"),
                 CoverCache and CoverCache.human_bytes(bytes) or tostring(bytes))
-        end,
+        end),
         keep_menu_open = true,
         callback = function(touchmenu_instance)
             local bytes = self:_shelfCacheBytes()
@@ -4947,11 +4987,11 @@ function FanQiePlugin:getCacheMenuItems()
         end,
     })
     table.insert(items, {
-        text_func = function()
+        text_func = safe_label(function()
             local bytes = self:_storeCacheBytes()
             return T(_("清空书城缓存（榜单 + 封面 · %1）"),
                 CoverCache and CoverCache.human_bytes(bytes) or tostring(bytes))
-        end,
+        end),
         keep_menu_open = true,
         callback = function(touchmenu_instance)
             local bytes = self:_storeCacheBytes()
@@ -4981,7 +5021,7 @@ function FanQiePlugin:getCacheMenuItems()
     -- 评论缓存 = 段评图片（comment_images/）。段评数据在内存里（换书/换章失效），
     -- 落盘的只有图片；有效期档位也放在这条旁边，用户不用去设置里翻。
     table.insert(items, {
-        text_func = function()
+        text_func = safe_label(function()
             local files, bytes = 0, 0
             if CoverCache then
                 local st = CoverCache.stats(self:_comment_image_dir())
@@ -4990,7 +5030,7 @@ function FanQiePlugin:getCacheMenuItems()
             end
             return T(_("清空评论缓存（段评图片 · %1 张 · %2）"), tostring(files),
                 CoverCache and CoverCache.human_bytes(bytes) or tostring(bytes))
-        end,
+        end),
         keep_menu_open = true,
         callback = function(touchmenu_instance)
             local files, bytes = 0, 0
@@ -5050,7 +5090,7 @@ function FanQiePlugin:getCacheMenuItems()
         keep_menu_open = true,
         callback = function()
             UIManager:show(ConfirmBox:new{
-                text = string.format(_("确定清除所有番茄小说缓存?\n%d 本书, %d 章节将被删除。"), stats.book_count, stats.chapter_count),
+                text = string.format(_("确定清除所有番茄小说缓存?\n%d 本书, %d 章节将被删除。"), book_count, chapter_count),
                 ok_text = _("清除"),
                 cancel_text = _("取消"),
                 ok_callback = function()
