@@ -2,15 +2,14 @@
 封面网格：布局度量（`metrics`）+ 单格单元（`CoverCellWidget`）+ 「显示方式」对话框。
 
 布局（一格）：
-    ┌────────────┐
-    │ ╭────────╮ │  ← 圆角封面 + 1px 细描边（在列槽内**居中**）
-    │ │  封面  │ │
-    │ ╰────────╯ │
-    │   书名…    │  ← 单行，超宽省略号
-    │ 122/256章   │  ← 可选：信息短行（书架=章节进度；书城=字数·在读）
-    │ ▓▓▓▓░░░░░  │  ← 可选：细进度条（书架）
-    │ [连载中]    │  ← 可选：状态徽章（书架 / 书城）
-    └────────────┘
+    ┌──────────────┐
+    │ ╭─────────[更新]╮ │  ← 圆角封面 + 1px 细描边（在列槽内**居中**）；
+    │ │   封面    │ │     状态徽章**叠在封面右上角**（不吃纵向空间）
+    │ ╰──────────╯ │
+    │    书名…      │  ← 单行，超宽省略号
+    │  122/256章    │  ← 可选：信息短行（书架=章节进度；书城=字数·在读）
+    │  ▓▓▓▓░░░░░   │  ← 可选：细进度条（书架）
+    └──────────────┘
 
 ## 为什么行数是**显式**的（v2.15.0 改）
 
@@ -32,6 +31,7 @@ local GestureRange = require("ui/gesturerange")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local FrameContainer = require("ui/widget/container/framecontainer")
+local OverlapGroup = require("ui/widget/overlapgroup")
 local TextWidget = require("ui/widget/textwidget")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
@@ -233,6 +233,16 @@ function CoverCell.metaExtra()
     return S.sz(2) + CoverCell.metaLineH()
 end
 
+--- 「细进度条」的额外高度 = 与上一行的空隙 + 条高。
+---
+--- 🔴 只有书架格画进度条（书城格没有 `entry.progress`），而这一行的高度以前**没人预留**：
+--- 书架传 `titleExtra() + metaExtra()`，格子里却还要多画一条 `sz(3) + sz(4)` 的条 ⇒
+--- 内容恒比 `cell_h` 高 7px，居中后上下各溢出一截（徽章被压掉半个就是在这里叠加的）。
+--- 调用点与 `metaExtra()` 一样按需相加。
+function CoverCell.progressExtra()
+    return S.sz(3) + S.sz(4)
+end
+
 --- 网格度量。
 ---@param avail_w number 内容区可用宽度（已扣掉左右页边距）
 ---@param avail_h number 内容区可用高度（已扣掉标题栏与底部分页条）
@@ -321,11 +331,42 @@ function CoverCellWidget:init()
     }
 
     local clipped_cover, cover_frame, cover_inner = build_cover(entry, m)
+
+    -- 状态徽章（更新 / 连载中 / 已完结 / 已断更）：**叠在封面右上角**，不占纵向空间。
+    --
+    -- 以前它是 VerticalGroup 里的独立一行（封面 → 书名 → 章节进度 → 进度条 → 徽章），
+    -- 但那一行的高度**没有任何调用点算进 `title_extra`**（书架传的是
+    -- `titleExtra() + metaExtra()`，书城只加 metaExtra）⇒ 格子里需要的高度
+    -- 恒比 `cell_h` 多出「徽章 + 间距」那一截，`CenterContainer` 居中后上下各溢出
+    -- 十几像素，被相邻行/分页条压掉 —— 用户看到的就是「每本书竖向都显示不全」
+    -- （徽章只露出半截，进度条也贴边）。叠到封面上以后它不再参与纵向排版，
+    -- 书名 / 章节 / 进度条按原有预留量就能完整放下（书架另补 `progressExtra()`）。
+    local cover_stack = clipped_cover
+    if type(entry.tag) == "string" and entry.tag ~= "" then
+        local badge = S.badge(entry.tag, 12)
+        local bs = badge:getSize()
+        local inset = S.sz(4)
+        -- 右上角：OverlapGroup 只有在子件带 `overlap_offset`（且没有 `overlap_align`）
+        -- 时才按这对坐标摆；`overlap_align = "right"` 会走另一分支、把 offset 忽略掉。
+        local bx = m.cw - bs.w - inset
+        if bx < 0 then bx = 0 end                       -- 封面比徽章还窄（4~8 列小屏）：贴左不越界
+        local by = inset
+        if by + bs.h > m.ch then by = math.max(0, m.ch - bs.h) end
+        badge.overlap_offset = { bx, by }
+        -- `allow_mirroring = false`：镜像版式下 OverlapGroup 会翻转 x，徽章会跑到左上角
+        cover_stack = OverlapGroup:new{
+            dimen = Geom:new{ w = m.cw, h = m.ch },
+            allow_mirroring = false,
+            clipped_cover,
+            badge,
+        }
+    end
+
     local kids = {
         align = "center",
         CenterContainer:new{
             dimen = Geom:new{ w = m.slot_w, h = m.ch },
-            clipped_cover,
+            cover_stack,
         },
     }
 
@@ -368,11 +409,8 @@ function CoverCellWidget:init()
         kids[#kids + 1] = S.progressBar(math.max(S.sz(24), m.slot_w - S.sz(16)), S.sz(4), pct * 100)
     end
 
-    -- 书城格：状态徽章（连载中 / 已完结 / 已断更）
-    if type(entry.tag) == "string" and entry.tag ~= "" then
-        kids[#kids + 1] = VerticalSpan:new{ width = S.sz(3) }
-        kids[#kids + 1] = S.badge(entry.tag, 12)
-    end
+    -- ⚠️ 状态徽章**不在这里**：它叠在封面右上角（见上面 `cover_stack`），
+    --    一旦放回这个纵向序列就会重新占高度、把书名/进度条挤出去。
 
     local group = CenterContainer:new{
         dimen = Geom:new{ w = m.slot_w, h = m.cell_h },

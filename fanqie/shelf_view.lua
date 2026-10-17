@@ -325,12 +325,15 @@ end
 --- `items_per_page` 均分出来的值 —— 行数是「列宽 → 封面高 → 格高」反推的。
 function ShelfMenu:buildGridItems(select_number, cols, rows)
     local pad = CoverCell.sidePad()
-    -- title_extra 显式加上「章节进度行」的高度：网格格高是按 rows 均分出来的，
-    -- 少算这一行的话封面会顶到章节文字上（`cell_h` 只夹到 `title_extra + 24`）。
+    -- title_extra 显式加上「章节进度行」与「细进度条」的高度：网格格高是按 rows
+    -- 均分出来的，少算哪一行封面都会顶到文字上（`cell_h` 只夹到 `title_extra + 24`）。
+    -- ⚠️ 进度条那 7px 以前漏了 ⇒ 内容恒比 cell_h 高，居中后上下各溢出一截（v2.16.17 补）。
     local m = CoverCell.metrics(self.inner_dimen.w - pad * 2,
                                 self.available_height - S.sz(10), cols, {
                                     rows = rows,
-                                    title_extra = CoverCell.titleExtra() + CoverCell.metaExtra(),
+                                    title_extra = CoverCell.titleExtra()
+                                        + CoverCell.metaExtra()
+                                        + CoverCell.progressExtra(),
                                 })
     self._grid_metrics = m
     self.perpage = m.perpage
