@@ -262,7 +262,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.17",
+    version = Info and Info.version or "2.16.18",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -653,7 +653,12 @@ function FanQiePlugin:addToMainMenu(menu_items)
                     {
                         text = _("关于"),
                         callback = self:safeCallback(_("关于"), function()
-                            self:showInfo(T(Info and Info.about_template or _("番茄小说插件 v%1"), self.version, self.settings:get_download_dir()))
+                            -- cover_cell 构建标记：同主菜单「关于」（见 getMainMenuItems）
+                            local ok_cc, CCm = pcall(require, "fanqie.cover_cell")
+                            local build_note = (ok_cc and CCm and CCm.BUILD)
+                                and T(_("（cover_cell 构建 %1）"), CCm.BUILD) or ""
+                            self:showInfo(T(Info and Info.about_template or _("番茄小说插件 v%1"), self.version, self.settings:get_download_dir())
+                                .. build_note)
                         end),
                     },
                 }
@@ -2182,8 +2187,15 @@ function FanQiePlugin:getMainMenuItems()
     table.insert(items, {
         text = _("关于"),
         callback = self:safeCallback(_("关于"), function()
+            -- cover_cell 的构建标记：用户报「网格改动没生效」时，先看这行 ——
+            -- 标记是旧的 ⇒ 设备上那份 cover_cell.lua 没换上（解压/覆盖问题），
+            -- 不是代码没改。
+            local ok_cc, CCm = pcall(require, "fanqie.cover_cell")
+            local build_note = (ok_cc and CCm and CCm.BUILD)
+                and T(_("（cover_cell 构建 %1）"), CCm.BUILD) or ""
             UIManager:show(InfoMessage:new{
-                text = T(Info and Info.about_template or _("番茄小说插件 v%1"), self.version, self.settings:get_download_dir()),
+                text = T(Info and Info.about_template or _("番茄小说插件 v%1"), self.version, self.settings:get_download_dir())
+                    .. build_note,
             })
         end),
     })

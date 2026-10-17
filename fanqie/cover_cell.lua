@@ -52,7 +52,16 @@ local UIManager = require("ui/uimanager")
 local ok_H, H = pcall(require, "fanqie.helper")
 if not ok_H then H = nil end
 
+-- 日志（拿不到就静默 —— 网格不能因为日志组件挂掉）
+local ok_Log, Log = pcall(require, "fanqie.logger")
+if not ok_Log or not Log then Log = nil end
+
 local CoverCell = {}
+
+-- 🔴 构建标记：随每次改动本文件手动更新。「关于」里会显示它 —— 用户报告
+-- 「改了没生效」时，先看这个标记对不对：标记是旧的 ⇒ 设备上这份文件**没换上**，
+-- 是解压/覆盖环节的问题，别去改代码。
+CoverCell.BUILD = "20261017a"
 
 -- 封面宽高比 2:3（与番茄封面一致，也与 book.koplugin 的 `cw * 3 / 2` 同口径）
 local COVER_RATIO = 1.5
@@ -360,6 +369,14 @@ function CoverCellWidget:init()
             clipped_cover,
             badge,
         }
+        -- 诊断锚点：设备日志里出现这行 = 跑的这份 cover_cell 就是「叠加」实现；
+        -- 报「标签还在章节下面」却没有这行 ⇒ 设备上的 cover_cell.lua 是旧文件。
+        if Log then
+            Log.info("[网格] 徽章叠加 tag=", tostring(entry.tag),
+                     " offset=", tostring(bx), ",", tostring(by),
+                     " cover=", tostring(m.cw), "x", tostring(m.ch),
+                     " build=", CoverCell.BUILD)
+        end
     end
 
     local kids = {

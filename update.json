@@ -1,16 +1,16 @@
 {
-  "version": "2.16.17",
-  "name": "番茄小说 2.16.17",
+  "version": "2.16.18",
+  "name": "番茄小说 2.16.18",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.17/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.18/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.17/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.17/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.17/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.17/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.18/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.18/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.18/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.18/fanqie.koplugin.zip"
   ],
-  "size": 405706,
-  "sha256": "fa98003a4b5055f92871d6a7ee83efe5b3aa067dedab5ce8b4791a1448b88329",
-  "notes": "**封面网格的「更新 / 已完结」标签挪到封面右上角（不再占纵向空间）**\n\n用户反馈：网格视图里那排状态标签竖着显示不全，每本书都被压掉一截。\n\n- **为什么显示不全**：格子里的内容一直是\n  `封面 → 书名 → 章节进度 → 细进度条 → 状态标签`，而 `title_extra`\n  只预留了「书名 + 章节进度」两行 —— 书架的进度条那 7px 漏了，状态标签那一行\n  **两边都没算**。格子高度是按「列×行」均分的固定值，内容比它高，\n  `CenterContainer` 居中后上下各溢出一截 ⇒ 标签只露半个、进度条贴边。\n- **改法**：标签不再参与纵向排版，改成用 `OverlapGroup` 叠在封面右上角\n  （白底描边小标签，压在封面上仍可读；坐标按封面宽高算，窄封面时自动夹住不越界）。\n  同时给书架调用点补上 `CoverCell.progressExtra()`，进度条那 7px 也进预留量。"
+  "size": 406831,
+  "sha256": "e6f8ef16f5316de0c79144dd5745ac0771a462cd177c9ecec74c840371d9991b",
+  "notes": "- **部署自证**：如果你更新后看到的现象和更新前一模一样（比如「标签还在章节数下面」），\n  先打开插件菜单 → **关于**，看有没有一行「**cover_cell 构建 20261017a**」：\n  - 有，且构建号是新的 ⇒ 设备上跑的就是新代码；\n  - 没有，或构建号是旧的 ⇒ **设备上的 `fanqie/cover_cell.lua` 没有被替换成功**\n    （解压/覆盖环节的问题，zip 本身没问题）。处理：把设备上整个 `fanqie.koplugin`\n    目录**删掉再解压**，然后完全重启 KOReader。\n- 封面网格的徽章叠加路径加了一条诊断日志（`[网格] 徽章叠加 tag=… offset=… build=…`），\n  供日志定位用。"
 }
