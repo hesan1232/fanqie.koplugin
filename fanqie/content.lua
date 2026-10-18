@@ -617,24 +617,34 @@ function Content.clean_chapter_content(raw_content, title)
         if #comment_samples < 3 then
             table.insert(comment_samples, string.format('<comment ident="%s" count="%s" />', ident:sub(1, 80), count))
         end
-        -- 用 <a href="fanqie-para:N"> 代替 <span onclick>，因为 KOReader 的 crengine
-        -- 不支持 JavaScript onclick 事件，但支持 <a> 链接点击 → 触发 onGotoLink 事件
-        -- href 中的 N 是段评在 para_reviews 表中的序号，插件通过 onGotoLink 拦截
+        -- 用 <a href="fanqie-para:..."> 代替 <span onclick>，因为 KOReader 的 crengine
+        -- 不支持 JavaScript onclick 事件，但支持 <a> 链接点击
+        -- href 中的数字是段评在 para_reviews 表中的序号，插件拦截后查表。
+        --
+        -- 🔴 v2.16.21 修：scheme 里绝对不能出现下划线。
+        --    crengine 判定「链接是不是外部 URL」用的正则会顺手把 `_` 替换成 `-`，
+        --    于是 `fanqie_para:18` 到壳里就成了 `fanqie-para:18`，用户看到
+        --    「无效或外部链接：fanqie-para:18」；而且带 `_` 的串还会被它当成
+        --    普通外部 URL 直接弹系统确认框（ReaderUI 自己都拦不住）。
+        --    统一用 **连字符 + 井号锚点**：`fanqie-para:#N`。这是标准
+        --    `scheme://path#fragment` 形状，crengine 只认成可跳转链接，
+        --    并把整个 href 原样交给 UI 层（我们两处匹配都按 `#?%d+` 取号）。
+        --    顺带加 role/aria：个别版本会据此抑制「外部链接」提示。
         comment_bubbles[idx] = string.format(
-            '<a class="para-comment" href="fanqie-para:%d">%d</a>',
+            '<a class="para-comment" role="doc-noteref" href="fanqie-para:#%d">%d</a>',
             idx, n
         )
         return "\001CMT" .. idx .. "\001"
     end)
     -- 2. 匹配不带 count 的 <comment ident="..." />
-    content = content:gsub('<comment%s+ident="([^"]*)"%s*/?>', function(ident)
+    content = content:gsub('<comment%s+ident="[^"]*"%s*/?>', function(ident)
         comment_count = comment_count + 1
         local idx = comment_count
         if #comment_samples < 3 then
             table.insert(comment_samples, string.format('<comment ident="%s" />', ident:sub(1, 80)))
         end
         comment_bubbles[idx] = string.format(
-            '<a class="para-comment" href="fanqie-para:%d">0</a>',
+            '<a class="para-comment" role="doc-noteref" href="fanqie-para:#%d">0</a>',
             idx
         )
         return "\001CMT" .. idx .. "\001"
@@ -1610,9 +1620,10 @@ function Content.save_chapter_html(settings, book, chapter, xhtml, assets, css)
         return "<img" .. new_attrs .. ">"
     end)
 
-    css = css or [[body { font-size: 1.05em; }]]
-    -- 段评交互通过 <a href="fanqie-para:N"> 链接实现，KOReader crengine
-    -- 不支持 JavaScript，点击链接会触发 onGotoLink 事件，插件拦截处理
+    css = css or [[body { font-size: 1.05em; }
+a.para-comment { text-decoration: none; }]]
+    -- 段评交互通过 <a href="fanqie-para:#N"> 链接实现，KOReader crengine
+    -- 不支持 JavaScript，点击链接后由 patches/core.lua 的 ReaderLink 拦截处理
     local html = [[<!DOCTYPE html>
 <html lang="zh-CN">
 <head>

@@ -1,16 +1,16 @@
 {
-  "version": "2.16.20",
-  "name": "番茄小说 2.16.20",
+  "version": "2.16.21",
+  "name": "番茄小说 2.16.21",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.20/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.21/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.20/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.20/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.20/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.20/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.21/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.21/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.21/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.21/fanqie.koplugin.zip"
   ],
-  "size": 409952,
-  "sha256": "6f974e05ee153e34fab07bc2960803e524b6d86259d93db8580f03ef90fe689b",
-  "notes": "- **开书更快：有缓存就先进阅读，目录在后台静默刷新**。旧策略是「只要有网络，\n  每次开书都等云端目录拉完才进书」，网络慢时每次都白等一轮。现在：\n  - 有目录缓存 ⇒ **立即进阅读**（定位逻辑不变），同时后台拉一次云端目录与阅读进度；\n  - 后台刷新**只写缓存**，不动正在阅读的章索引（翻章不会错位）；拉新章节成功后\n    下次开书就能看到，阅读中会提示「目录已更新：新增 N 章」（仅限当前正在读番茄书）；\n  - 后台发现**云端进度比本机更靠后**（比如在 App 上读到了更后面的章）⇒ 记下来，\n    下次进入这本书时直接跳过去，并提示一次；\n  - 拉取失败或拉到空（如 Cookie 过期）⇒ 一切照旧，静默保留旧缓存，不打断阅读。\n- 无缓存的次序不变：没网提示联网；有网走「等目录」的老路。"
+  "size": 415950,
+  "sha256": "589848df04037f6a95815ccfad1b07802ba1a88d4feb687c9a5f0113b330d9fc",
+  "notes": "- **修「有些设备上段评点不开」**：点气泡弹「评论无效或外部链接：fanqie-paea:18」。\n  两个原因叠加：① 判断「是不是番茄的书」只认路径里的 `/fanqie/`，而改过下载目录后\n  真实路径是 `番茄小说/<书号>/chapter_xxx.html`，这个判断**永远是假** ⇒ 目录接管、\n  阅读历史过滤、翻页接管、段评拦截**四个补丁全部静默失效**（标记是装的时候置的，\n  所以从不报错）；现改为按**文件结构**判断。② 拦截挂在 `onGotoLink`，但 crengine\n  在「内部锚点为空」时根本走不到它；现改为 `onTap` 主拦 + `onGotoLink` 兜底，\n  命中后吃掉点击。气泡链接也改成 `fanqie-para:#N`（带下划线的 scheme 会被\n  crengine 改写成 `-` 并当外链弹框，这正是 `fanqie-paea` 的来源）——**旧缓存章节\n  不用重下**，两种格式都认。\n- **修「点了开始阅读后不能自动下载最新一章」**：后台目录刷新只写缓存、没动正在\n  阅读的目录表，读到旧目录末章后「下一章」是空的。现在新章会**追加**到目录尾部\n  （必须前缀一致才追加，避免作者删改章节导致章序错位；正在读别的书时不会串书）。"
 }

@@ -262,17 +262,28 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.20",
+    version = Info and Info.version or "2.16.21",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
 -- Prevents event handlers (onEndOfBook, onCloseDocument, etc.) from
 -- firing on unrelated documents the user may open afterwards.
+--
+-- 🔴 v2.16.21：不能只看路径里有没有 `/fanqie/`。默认缓存目录确实是
+--    `<koreader>/fanqie/cache`（小写），但**用户改过下载目录**之后就变成任意路径
+--    （真机日志里是 `/mnt/us/番茄小说/<book_id>/chapter_xxx.html`），
+--    `:lower()` 不会把中文变成 fanqie ⇒ 这里恒假 ⇒ onEndOfBook / 进度上传 /
+--    段评等一堆依赖它的分支全部静默失效。改成结构判据（与
+--    `state.book_id_from_path` 同口径）：`.../<书号>/chapter_<item_id>.html`。
 function FanQiePlugin:isCurrentDocFanqie()
     if not (self.ui and self.ui.document) then return false end
     local doc_path = self.ui.document.file or self.ui.document.path
-    if not doc_path then return false end
-    return doc_path:lower():find('/fanqie/', 1, true) ~= nil
+    if not doc_path or type(doc_path) ~= "string" then return false end
+    if doc_path:lower():find('/fanqie/', 1, true) then return true end
+    -- 结构判据：父目录像书号 + 文件名像章节（见 patches/core.lua 的 is_fanqie_path）
+    local normalized = doc_path:gsub("\\", "/")
+    local parent = normalized:match("/([^/]+)/chapter_[^/]+%.html$")
+    return parent ~= nil and #parent >= 6 and parent:match("^[%w%._-]+$") ~= nil
 end
 
 --- KOReader 的全局阅读设置对象（不存在时返回 nil）。
@@ -5464,8 +5475,7 @@ function FanQiePlugin:_openBookWithCache(book, cached_chapters)
 end
 
 -- 后台静默刷新目录：开书走了缓存快路径后，仍在后台拉一次云端目录与阅读进度，
--- 让新章节与「在 App 上读到更靠后」这两件事不被错过。只写目录缓存与内存目录，
--- 绝不动 current_chapters（阅读中的章索引必须保持稳定，否则翻章会错位）。
+-- 让新章节与「在 App 上读到更靠后」这两件事不被错过。
 -- 失败或拉到空（如 Cookie 过期）一律静默保留旧缓存，不打断阅读。
 -- @param old_count number 开书时手里缓存目录的章数（用于提示新增章节）
 function FanQiePlugin:_refreshCatalogInBackground(book, old_count)
@@ -5501,6 +5511,61 @@ function FanQiePlugin:_refreshCatalogInBackground(book, old_count)
         Content.save_catalog_cache(settings, book_id, chapters)
         _state.setDirectoryCache(book_id, chapters)
 
+        -- 🔴 v2.16.21：新章节必须**并进 `current_chapters`**，否则阅读中
+        --    「到末页自动下一章」用的还是开书那一刻的旧目录 —— 旧目录末章之后
+        --    `chapters[idx + 1]` 是 nil，`navigateToChapter` 直接 return
+        --    「章节不存在」，用户看到的就是「点开始阅读后不能自动下载最新一章」。
+        --    ⚠️ 合并方式是**按 itemId 追加尾部**，绝不整体替换：
+        --    ① 替换会让 `current_chapter_index` 指向错位的章（云端目录顺序可能
+        --       与本地缓存不同，甚至中间插入/删除了章节）；
+        --    ② 只在「云端目录的前 N 项与本地完全一致」时才认为可以安全追加，
+        --       不一致就整段放弃（宁可这次不更新，也不能让正在读的章错位）。
+        --    这也是「老书缓存目录短、云端多了新章」这个最常见场景。
+        local added = 0
+        local cur = _state.current_chapters
+        local same_book = false
+        if type(cur) == "table" and #cur > 0 then
+            -- 🔴 归属必须由**文档路径**反查，不能看 `_state.current_book`：
+            --    openBook 一进来就把它换成了新书（后台刷新期间用户可能已经
+            --    切到另一本书），拿它判「正在读的是不是这本书」会把别的书的
+            --    目录并进来。与 localLatestChapterIndex 同口径。
+            local doc_path = _state.current_document_path
+            if doc_path and _state.book_id_from_path
+                    and tostring(_state.book_id_from_path(doc_path)) == tostring(book_id) then
+                same_book = true
+            elseif not doc_path and self:isCurrentDocFanqie() then
+                same_book = true
+            end
+        end
+        if same_book then
+            local prefix_ok = #chapters >= #cur
+            if prefix_ok then
+                for i = 1, #cur do
+                    local a = tostring(cur[i].itemId or cur[i].item_id or "")
+                    local b2 = tostring(chapters[i].itemId or chapters[i].item_id or "")
+                    if a ~= b2 then prefix_ok = false break end
+                end
+            end
+            if prefix_ok then
+                -- ⚠️ 原地追加（cur[i] = ...）是对的：current_chapters 就是
+                --    阅读器持有的那张表，必须同一个对象才能让「下一章」看到新章。
+                --    E5 用例暴露过一个测试侧的坑：若测试让 cur 指向全局共享的
+                --    目录常量，原地追加会把那个常量一起改大 —— 生产代码里
+                --    current_chapters 永远是 load_catalog_cache 新建的表，不存在
+                --    这个共享问题；回归里则必须按真实时序先过一遍 openChapter。
+                for i = #cur + 1, #chapters do
+                    cur[i] = chapters[i]
+                    added = added + 1
+                end
+                if added > 0 and Log then
+                    Log.info("catalog bg: appended " .. tostring(added)
+                        .. " new chapters to current_chapters (now " .. tostring(#cur) .. ")")
+                end
+            elseif Log then
+                Log.info("catalog bg: catalog prefix changed, skip current_chapters merge")
+            end
+        end
+
         -- 云端进度比本机更靠后：记到 cloud_ahead，下次开书定位生效
         if result.progress and result.progress.data then
             for _, item in ipairs(result.progress.data) do
@@ -5530,9 +5595,9 @@ function FanQiePlugin:_refreshCatalogInBackground(book, old_count)
         end
 
         -- 新增章节：只提示一次，不弹目录
-        local added = old_count and (#chapters - old_count) or 0
-        if added > 0 and self:isCurrentDocFanqie() then
-            self:showInfo(T(_("目录已更新：新增 %1 章"), added))
+        local reported = old_count and (#chapters - old_count) or 0
+        if reported > 0 and self:isCurrentDocFanqie() then
+            self:showInfo(T(_("目录已更新：新增 %1 章"), reported))
         end
     end, { poll_interval = 0.3, timeout = 30, tag = "catalog_bg" })
 end

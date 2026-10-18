@@ -135,10 +135,21 @@ M.loadDownloadState = function()
     end
 end
 
+--- 判断给定路径（默认「当前正在读的文档」）是不是番茄章节文件。
+--
+-- 🔴 v2.16.21：不能只认 `/fanqie/`。真实缓存路径由 `Content.book_cache_dir()`
+--    决定 = `<cache_dir>/<book_id>/chapter_<item_id>.html`，`cache_dir` 默认是
+--    `<koreader>/fanqie/cache`，但用户改过下载目录后就是任意路径
+--    （真机日志：`/mnt/us/番茄小说/<book_id>/chapter_xxx.html`）。中文目录名
+--    经 `:lower()` 也不会变成 `fanqie`，于是**所有守卫恒假**。
+--    这里与 `book_id_from_path` 保持同一口径（父目录 / 章节文件名结构）。
 M.isCurrentDocFanqie = function(file_path)
     local path = file_path or M.current_document_path
-    if not path then return false end
-    return path:lower():find('/fanqie/', 1, true) or false
+    if type(path) ~= "string" or path == "" then return false end
+    if path:lower():find('/fanqie/', 1, true) then return true end
+    local normalized = path:gsub("\\", "/")
+    local parent = normalized:match("/([^/]+)/chapter_[^/]+%.html$")
+    return parent ~= nil and #parent >= 6 and parent:match("^[%w%._-]+$") ~= nil
 end
 
 --- 从章节文档路径反推番茄书号（纯函数）。
