@@ -4,7 +4,13 @@ local M = {
     -- 导航补丁（ReaderPaging & ReaderRolling）版本化标记：
     -- 升级时改变此值即可强制重新安装，无需改动 _mark / _mark_link。
     -- v3: 回退向前翻页拦截（前天版本逻辑），仅保留向后翻页的上一章拦截
-    _mark_nav = "_fanqie_patch_nav_v3",
+    -- v4（v2.16.23）：边界判据从「调完原函数前后位置没变」换成 crengine 的
+    --   物理关系 `document:getPrevPage(page) == 0`，并且**先判后调**（命中就
+    --   提前返回，不再先让 crengine 白做一次翻页 + 重绘）。
+    --   🔴 必须换标记：老设备上 v3 已经是 true，不换的话 `install()` 首行
+    --   `if verifyPatched() then return end` 直接返回 ⇒ 新判据永远装不上，
+    --   症状与没升级一模一样（v2.16.21 的 _mark_link_v2 同一个坑）。
+    _mark_nav = "_fanqie_patch_nav_v4",
     -- v2.16.21：段评拦截从「只拦 onGotoLink」升级为「onTap 主拦 + onGotoLink 兜底」。
     -- 🔴 必须换新标记：老版本装过的设备上 `_mark_link` 已经是 true，
     --    若沿用旧标记，`install()` 第一行 `if verifyPatched() then return end`
@@ -88,6 +94,73 @@ local is_fanqie_path = function(file_path, instance)
     return parent ~= nil and #parent >= 6 and parent:match("^[%w%._-]+$") ~= nil
 end
 
+-- ===========================================================================
+-- 「当前位置是不是整个文档的开头」——翻到上一章的唯一判据
+-- ===========================================================================
+-- 🔴 v2.16.23 换掉了老判据 `old_pos == 1 and old_pos == new_pos`（先调原函数、
+--    再比较调用前后的位置）。它有三个毛病：
+--
+--   ① **位置比较不可靠**。`current_page` 在文档刚加载、`view` 还没首绘时是
+--      nil；老代码 `nil == nil` 成立 ⇒ 这时候任何一次「上一页」都会被当成
+--      「到章首了」，白跳一章。`getTopPage() == 1` 同样不等价于「文档开头」：
+--      page_scroll（连续滚动）模式下它和物理页不是一回事。
+--   ② **时序反了**。先调 `original_onGotoViewRel` 再判断，等于在文档开头先让
+--      crengine 做一次注定翻不动的翻页（内部还要 `setPagePosition` /
+--      `_gotoPage` / 派 PageUpdate），然后才去打开上一章——多一次重绘，
+--      而且是在「马上要换文档」的状态里做的。
+--   ③ 语义不直白：代码写的是「第一页」，实际判的是「位置没变」。
+--
+--    现在直接用 crengine 自己的物理关系：`document:getPrevPage(page) == 0`
+--    就是「这一页前面没有页」，KOReader 自己也这么判首页
+--    （frontend/apps/reader/modules/readerpaging.lua:808）。
+--    取不到 `getPrevPage`（老 crengine）时才退回「第 1 页」。
+local function prev_page_of(doc, page)
+    if type(page) ~= "number" then return nil end
+    if type(doc.getPrevPage) ~= "function" then return nil end
+    local ok, prev = pcall(doc.getPrevPage, doc, page)
+    if not ok or type(prev) ~= "number" then return nil end
+    return prev
+end
+
+--- ReaderPaging（有物理页的文档，如 PDF）是否已在文档开头。
+--  ⚠️ 对番茄这种 HTML/crengine 文档，`ui.paging` 根本不注册
+--  （readerui.lua 只在 `document.info.has_pages` 时注册 paging 模块），
+--  所以这一层实际走不到；保留它是为了不把老逻辑留在代码里，将来若 KOReader
+--  改变模块划分也不会突然行为倒退。
+local function paging_at_document_start(paging_self)
+    local doc = paging_self and paging_self.ui and paging_self.ui.document
+    if not doc then return false end
+    -- 连续滚动模式：getTopPage 不可靠，改看文档内位置比例（0 = 顶部）
+    if paging_self.view and paging_self.view.page_scroll then
+        local ok, position = pcall(paging_self.getTopPosition, paging_self)
+        if not ok or type(position) ~= "number" or position > 0.001 then
+            return false
+        end
+    end
+    local page = paging_self.getTopPage and paging_self:getTopPage() or nil
+    if type(page) ~= "number" then return false end
+    local prev = prev_page_of(doc, page)
+    if prev then return prev == 0 end
+    return page == 1
+end
+
+--- ReaderRolling（crengine 文档）是否已在文档开头。番茄章节走的就是这条。
+local function rolling_at_document_start(rolling_self)
+    local doc = rolling_self and rolling_self.ui and rolling_self.ui.document
+    if not doc then return false end
+    if rolling_self.view and rolling_self.view.view_mode == "scroll" then
+        -- `current_pos` 是文内位置（像素，0 = 顶部）。滚动模式下「第 1 页」
+        -- 可能横跨好几屏，只看 current_page 会把章中误判成开头 ⇒ 两个都看。
+        local pos = rolling_self.current_pos
+        if type(pos) ~= "number" or pos > 0.001 then return false end
+        local prev = prev_page_of(doc, rolling_self.current_page)
+        return prev == nil or prev == 0
+    end
+    local prev = prev_page_of(doc, rolling_self.current_page)
+    if prev then return prev == 0 end
+    return rolling_self.current_page == 1
+end
+
 M.install = function()
     if M.is_plugin_disabled() then
         return
@@ -137,32 +210,37 @@ M.install = function()
     if not ReaderPaging[M._mark_nav] then
         local original_onGotoViewRel = ReaderPaging.onGotoViewRel
         function ReaderPaging:onGotoViewRel(diff, no_page_turn)
-            local old_pos = self:getTopPage()
-            local result = original_onGotoViewRel(self, diff, no_page_turn)
-            local new_pos = self:getTopPage()
-            if diff < 0 and old_pos == 1 and old_pos == new_pos and is_fanqie_path(nil, self.ui) then
+            -- 🔴 `no_page_turn = true` 是 ReaderSearch 的搜索游标移动
+            --    （readersearch.lua:558 `paging:onGotoViewRel(-1, true)`），
+            --    不是翻页意图：这时页面刻意不动，位置比较必然「没变」，
+            --    老逻辑会把它当成「到章首」⇒ 把搜索动作吞成跳章。
+            if diff < 0 and no_page_turn ~= true and is_fanqie_path(nil, self.ui)
+                    and paging_at_document_start(self) then
                 self.ui:handleEvent(Event:new("FanQiePrevChapter"))
+                return true
             end
-            return result
+            return original_onGotoViewRel(self, diff, no_page_turn)
         end
         ReaderPaging[M._mark_nav] = true
     end
 
     -- =========================================================================
-    -- 补丁4：ReaderRolling — 滚动模式下第一页前翻页触发上一章
+    -- 补丁4：ReaderRolling — 章首再往前翻 ⇒ 上一章（番茄章节实际走这条）
     -- =========================================================================
     local ReaderRolling = require("apps/reader/modules/readerrolling")
     if not ReaderRolling[M._mark_nav] then
         local original_onGotoViewRel_rolling = ReaderRolling.onGotoViewRel
-        ReaderRolling.onGotoViewRel = function(rolling_self, diff)
-            local scroll_mode = rolling_self.view.view_mode == "scroll"
-            local old_pos = scroll_mode and rolling_self.current_pos or rolling_self.current_page
-            original_onGotoViewRel_rolling(rolling_self, diff)
-            local new_pos = scroll_mode and rolling_self.current_pos or rolling_self.current_page
-            if diff < 0 and old_pos == new_pos and is_fanqie_path(nil, rolling_self.ui) then
-                rolling_self.ui:handleEvent(Event:new("FanQiePrevChapter"))
+        function ReaderRolling:onGotoViewRel(diff)
+            -- 先判后调：命中就提前返回，不让 crengine 先白翻一次
+            -- （它会 _gotoPage/_gotoPos + 派 PageUpdate ⇒ 多一次重绘，
+            --  而且是在「马上要换文档」的状态里做的）。
+            if diff < 0 and is_fanqie_path(nil, self.ui)
+                    and rolling_at_document_start(self) then
+                self.ui:handleEvent(Event:new("FanQiePrevChapter"))
+                return true
             end
-            return true
+            -- 原实现的返回值要透传（别像老代码那样无条件 `return true`）
+            return original_onGotoViewRel_rolling(self, diff)
         end
         ReaderRolling[M._mark_nav] = true
     end

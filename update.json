@@ -1,16 +1,16 @@
 {
-  "version": "2.16.22",
-  "name": "番茄小说 2.16.22",
+  "version": "2.16.23",
+  "name": "番茄小说 2.16.23",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.22/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.23/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.22/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.22/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.22/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.22/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.23/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.23/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.23/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.23/fanqie.koplugin.zip"
   ],
-  "size": 433606,
-  "sha256": "54bea117e7e6c83f89a0b6c859a9c1d1fc00472ad58339e0321b841004f873a3",
-  "notes": "- **许可证改为 GPL-3.0-only**（此前声明为 MIT，不成立）：\n  - `fanqie/reading/` 与 `fanqie/reading.lua` 移植自**月读（AnkioTomas/moon）**的\n    KOReader 插件，原作以 GPLv3 发布。GPLv3 是 copyleft 许可，包含其代码的整体\n    必须以同一许可分发，原先的 MIT 声明与之冲突；\n  - 另外本插件运行在以 **AGPLv3** 发布的 KOReader 之内（并对其 ReaderLink 等模块\n    打补丁），也不宜单方面声明为 MIT；\n  - 本版起：根目录新增 `LICENSE`（GPLv3 全文）与 `THIRD_PARTY_NOTICES.txt`\n    （逐文件列出上游来源与版权），移植文件的头部补上\n    `Copyright (C) 月读 (AnkioTomas/moon) contributors`；\n  - 「使用条款」第 2 条原文写「禁止商业用途、二次打包分发」，属于 GPLv3 §7\n    不允许的附加限制，已改为**非许可条件的请求**；\n  - 发布包（zip）内一并携带 `LICENSE` 与 `THIRD_PARTY_NOTICES.txt`。"
+  "size": 435923,
+  "sha256": "57aee6aac0ea99376d97f37965921bcfa7b0c05e68ebc31b199a3d29930d8de4",
+  "notes": "- **修「章首往前翻」的边界判据**：老代码先调原翻页、再比较「位置有没有变」，\n  于是 ①文档刚加载、`current_page` 还是 `nil` 时 `nil == nil` 成立 ⇒ 任何一次\n  「上一页」都被当成到章首、白跳一章；②滚动模式下 `current_page` 常常一直是 1\n  （一页跨好几屏）⇒ 章中也被判成章首；③先调原实现再判断，等于在章首先让\n  crengine 做一次注定翻不动的翻页（还要重绘）再换章。现在改用 crengine 自己的\n  物理关系 `document:getPrevPage(page) == 0`（KOReader 判首页也用它），并且\n  **先判后调**：命中就提前返回，不再白翻。取不到该 API 的老 crengine 退回\n  页码判据。\n- **PDF/paging 层不再吞掉搜索**：`onGotoViewRel(-1, true)` 是搜索框「向上搜索」\n  的游标移动（`no_page_turn`），不是翻页意图，现在明确排除。\n- 导航补丁标记升到 `_fanqie_patch_nav_v4`：不换标记的话，热更新后同进程内\n  老标记已是 `true`，`install()` 首行就返回，新判据永远装不上。"
 }
