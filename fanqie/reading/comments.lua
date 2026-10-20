@@ -32,6 +32,9 @@
 调用方必须把它转成用户可见的错误，不要退化成「0 条评论」。
 
 @module fanqie.reading.comments
+--
+-- 版权与许可：本仓库以 GPL-3.0-only 分发，全文见根目录 LICENSE，
+-- 上游来源清单见 THIRD_PARTY_NOTICES.txt。
 --]]
 
 local Crypto = require("fanqie.reading.crypto")

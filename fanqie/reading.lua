@@ -7,6 +7,12 @@
 
 ⚠️ 文件内 local 函数的定义顺序是有意义的：Lua 的 local 作用域从声明语句之后才开始，
 被调用者必须定义在调用者之前（`now_ms` 曾因置于文件末尾导致整条链路报 nil）。
+--
+-- 版权与许可：
+--   Copyright (C) 月读 (AnkioTomas/moon) contributors
+--   本文件移植自月读的 KOReader 插件（book.koplugin），原作以 GNU GPLv3 发布。
+--   本仓库整体以 GPL-3.0-only 分发，全文见根目录 LICENSE，
+--   上游来源清单见 THIRD_PARTY_NOTICES.txt。
 --]]
 
 local Crypto = require("fanqie.reading.crypto")

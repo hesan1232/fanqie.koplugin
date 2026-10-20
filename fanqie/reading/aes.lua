@@ -4,6 +4,12 @@ AES-128/192/256（ECB/CBC）+ PKCS7 + GCM 解密，纯 LuaJIT。
 GCM 部分用于番茄漫画页图（CDN 返回 AES-256-GCM 密文）。
 
 @module fanqie.reading.aes
+--
+-- 版权与许可：
+--   Copyright (C) 月读 (AnkioTomas/moon) contributors
+--   本文件移植自月读的 KOReader 插件（book.koplugin），原作以 GNU GPLv3 发布。
+--   本仓库整体以 GPL-3.0-only 分发，全文见根目录 LICENSE，
+--   上游来源清单见 THIRD_PARTY_NOTICES.txt。
 --]]
 
 local bit = require("bit")

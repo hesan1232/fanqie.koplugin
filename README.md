@@ -7,7 +7,7 @@ KOReader 插件，用于在电纸书设备上阅读番茄小说。
 > **本项目是非官方的个人技术研究项目，与番茄小说及其运营方没有任何关联，也未获得其授权、许可或认可。**
 >
 > - 本插件**不提供、不存储、不传播**任何小说内容。正文 / 目录 / 图片等数据均由你的设备**直接从第三方服务器实时获取**，插件本身只是一个运行在 KOReader 上的客户端实现。
-> - 本项目仅供**个人学习、技术研究与交流**使用，**禁止任何形式的商业用途、二次分发与规模化使用**。
+> - 本项目意在**个人学习、技术研究与交流**。软件许可是 **GPL-3.0-only**（见[许可证](#许可证)）：该许可**允许**商业使用与再分发，作者在此仅**请求**（不构成许可条件）不要用于批量抓取或规模化使用。
 > - 使用本插件**可能违反第三方平台的服务条款**，请自行判断并承担全部风险；由此造成的账号受限、封禁、数据丢失或其他任何后果，**作者不承担任何责任**。
 > - 请**支持正版**，在官方渠道阅读与购买。本插件无意侵害任何人的权益；**若权利人认为本项目不妥，请联系作者，将立即删除相关内容**。
 > - 本插件按「**现状**」提供，不附带任何明示或暗示的担保，作者不保证其可用性、稳定性与后续维护。
@@ -406,11 +406,11 @@ return {
 本插件仅供**个人技术分享与学习研究**目的使用。**下载或使用本插件，即视为你已阅读、理解并同意以下全部条款：**
 
 1. **不提供内容**：本插件**不提供、不存储、不传播**任何小说内容，也不架设任何资源服务器。所有正文 / 目录 / 图片等数据均由你的设备**直接从第三方服务器实时获取**，插件本身只是一个运行在 KOReader 上的客户端实现。所有内容均来自公开网络，与本项目作者无关。
-2. **用途限制**：仅限**个人学习、技术研究与交流**，**禁止任何形式的商业用途、二次打包分发、批量抓取与规模化使用**。
+2. **用途期望（不是许可限制）**：本项目以 **GPL-3.0-only** 发布，**该许可证允许**你将本插件用于任何目的（包括商业目的）并再分发。作者在此仅作**请求**（不构成许可条件）：二次分发时请保留来源与许可声明，并对自己的使用行为负责。插件仍**不提供**任何内容，请勿用它做批量抓取或规模化使用。
 3. **风险自担**：使用本插件**可能违反第三方平台的服务条款**。是否能使用、使用多久、是否触发风控，均由第三方平台决定，作者无法控制也不作任何承诺。因使用本插件产生的一切后果（包括但不限于账号受限或封禁、IP 被限制、数据丢失、设备异常、任何直接或间接损失）**均由用户自行承担，作者不承担任何责任**。
 4. **版权与侵权处理**：本插件**无意侵害任何人的合法权益**。请**尊重版权、支持正版**，在官方渠道阅读与购买。若任何权利人认为本项目不妥或涉及侵权，请**联系作者**，作者将在核实后**立即删除相关内容**或停止维护。
 5. **无担保**：本插件按「**现状（AS IS）**」提供，不附带任何明示或暗示的担保（包括但不限于适销性、特定用途适用性与非侵权保证）。作者**不保证**其可用性、稳定性、准确性、安全性或后续维护，也不对任何使用后果负责。
-6. **与软件许可的关系**：本项目的 [MIT License](#许可证) 仅授予你对**本插件源代码**的使用许可，**不构成**对任何第三方内容、商标、接口或服务的授权。
+6. **与软件许可的关系**：本项目的 [GPL-3.0-only 许可](#许可证) 仅针对**本插件源代码**，**不构成**对任何第三方内容、商标、接口或服务的授权。上游代码的来源与版权见 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)。
 
 ## 常见问题
 
@@ -538,6 +538,22 @@ A: 番茄网页接口把部分文案用私用区码位替换过，插件内置�
 
 
 ## 更新日志
+
+### v2.16.22
+
+- **许可证改为 GPL-3.0-only**（此前声明为 MIT，不成立）：
+  - `fanqie/reading/` 与 `fanqie/reading.lua` 移植自**月读（AnkioTomas/moon）**的
+    KOReader 插件，原作以 GPLv3 发布。GPLv3 是 copyleft 许可，包含其代码的整体
+    必须以同一许可分发，原先的 MIT 声明与之冲突；
+  - 另外本插件运行在以 **AGPLv3** 发布的 KOReader 之内（并对其 ReaderLink 等模块
+    打补丁），也不宜单方面声明为 MIT；
+  - 本版起：根目录新增 `LICENSE`（GPLv3 全文）与 `THIRD_PARTY_NOTICES.txt`
+    （逐文件列出上游来源与版权），移植文件的头部补上
+    `Copyright (C) 月读 (AnkioTomas/moon) contributors`；
+  - 「使用条款」第 2 条原文写「禁止商业用途、二次打包分发」，属于 GPLv3 §7
+    不允许的附加限制，已改为**非许可条件的请求**；
+  - 发布包（zip）内一并携带 `LICENSE` 与 `THIRD_PARTY_NOTICES.txt`。
+- 本版**没有任何功能改动**，仅许可证与文案。
 
 ### v2.16.21
 
@@ -1550,4 +1566,43 @@ A: 番茄网页接口把部分文案用私用区码位替换过，插件内置�
 
 ## 许可证
 
-MIT License
+本项目以 **GNU General Public License version 3 only（GPL-3.0-only）** 分发，
+全文见仓库根目录 [LICENSE](LICENSE)。
+
+    fanqie.koplugin - 在 KOReader 中阅读番茄小说
+    Copyright (C) 2024-2026 fanqie.koplugin contributors
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, version 3 of the License.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+### 为什么不是 MIT
+
+本插件的 `fanqie/reading/` 与 `fanqie/reading.lua` 移植自
+**月读（AnkioTomas/moon）** 的 KOReader 插件，原作以 GPLv3 发布；此外本插件运行在
+以 AGPLv3 发布的 KOReader 之内。GPLv3 是 copyleft 许可，衍生的整体必须以同一许可
+分发，因此本项目**不能**继续以 MIT 声明。
+
+### 上游来源与版权
+
+各上游项目、被移植的文件、以及保留的版权声明，统一列在
+[THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)。简要如下：
+
+| 上游 | 许可 | 本项目中对应的文件 |
+| --- | --- | --- |
+| 月读 AnkioTomas/moon | GPLv3 | `fanqie/reading.lua`、`fanqie/reading/{aes,crypto,device,sign,sm3,text}.lua` |
+| fanqie-re（协议逆向） | 见原仓库 | 上述 reading 协议与四神签名的算法来源 |
+| kindle-forge（本项目作者自有） | — | `fanqie/reading/comments.lua`、`fanqie/qrlogin.lua` |
+| koobone.koplugin（本项目作者自有） | — | `fanqie/updater.lua`、`fanqie/updater_ui.lua` |
+| KOReader | AGPLv3 | 运行宿主，补丁对象 |
+
+发布包（`fanqie.koplugin.zip`）内已包含完整 Lua 源码、`LICENSE` 与
+`THIRD_PARTY_NOTICES.txt`，满足 GPLv3 对「对应源码」与「许可证文本」的要求。

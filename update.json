@@ -1,16 +1,16 @@
 {
-  "version": "2.16.21",
-  "name": "番茄小说 2.16.21",
+  "version": "2.16.22",
+  "name": "番茄小说 2.16.22",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.21/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.22/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.21/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.21/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.21/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.21/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.22/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.22/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.22/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.22/fanqie.koplugin.zip"
   ],
-  "size": 415950,
-  "sha256": "589848df04037f6a95815ccfad1b07802ba1a88d4feb687c9a5f0113b330d9fc",
-  "notes": "- **修「有些设备上段评点不开」**：点气泡弹「评论无效或外部链接：fanqie-paea:18」。\n  两个原因叠加：① 判断「是不是番茄的书」只认路径里的 `/fanqie/`，而改过下载目录后\n  真实路径是 `番茄小说/<书号>/chapter_xxx.html`，这个判断**永远是假** ⇒ 目录接管、\n  阅读历史过滤、翻页接管、段评拦截**四个补丁全部静默失效**（标记是装的时候置的，\n  所以从不报错）；现改为按**文件结构**判断。② 拦截挂在 `onGotoLink`，但 crengine\n  在「内部锚点为空」时根本走不到它；现改为 `onTap` 主拦 + `onGotoLink` 兜底，\n  命中后吃掉点击。气泡链接也改成 `fanqie-para:#N`（带下划线的 scheme 会被\n  crengine 改写成 `-` 并当外链弹框，这正是 `fanqie-paea` 的来源）——**旧缓存章节\n  不用重下**，两种格式都认。\n- **修「点了开始阅读后不能自动下载最新一章」**：后台目录刷新只写缓存、没动正在\n  阅读的目录表，读到旧目录末章后「下一章」是空的。现在新章会**追加**到目录尾部\n  （必须前缀一致才追加，避免作者删改章节导致章序错位；正在读别的书时不会串书）。"
+  "size": 433606,
+  "sha256": "54bea117e7e6c83f89a0b6c859a9c1d1fc00472ad58339e0321b841004f873a3",
+  "notes": "- **许可证改为 GPL-3.0-only**（此前声明为 MIT，不成立）：\n  - `fanqie/reading/` 与 `fanqie/reading.lua` 移植自**月读（AnkioTomas/moon）**的\n    KOReader 插件，原作以 GPLv3 发布。GPLv3 是 copyleft 许可，包含其代码的整体\n    必须以同一许可分发，原先的 MIT 声明与之冲突；\n  - 另外本插件运行在以 **AGPLv3** 发布的 KOReader 之内（并对其 ReaderLink 等模块\n    打补丁），也不宜单方面声明为 MIT；\n  - 本版起：根目录新增 `LICENSE`（GPLv3 全文）与 `THIRD_PARTY_NOTICES.txt`\n    （逐文件列出上游来源与版权），移植文件的头部补上\n    `Copyright (C) 月读 (AnkioTomas/moon) contributors`；\n  - 「使用条款」第 2 条原文写「禁止商业用途、二次打包分发」，属于 GPLv3 §7\n    不允许的附加限制，已改为**非许可条件的请求**；\n  - 发布包（zip）内一并携带 `LICENSE` 与 `THIRD_PARTY_NOTICES.txt`。"
 }

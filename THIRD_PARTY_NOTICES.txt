@@ -1,0 +1,60 @@
+fanqie.koplugin — 第三方代码与许可声明
+==========================================
+
+本插件整体以 GNU GPL version 3 only（GPL-3.0-only）分发，全文见同目录 LICENSE。
+下面列出本项目中「非本仓库原创」的部分及其来源，保留原有版权归属。
+
+--------------------------------------------------------------------------------
+1. 月读 · moon（KOReader 插件 book.koplugin）
+--------------------------------------------------------------------------------
+作者：AnkioTomas（https://github.com/AnkioTomas/moon）
+许可：GNU GPLv3
+
+以下文件由月读的 KOReader 插件（插件目录名 book.koplugin）移植而来，
+保留其版权：Copyright (C) 月读 (AnkioTomas/moon) contributors。
+
+  fanqie/reading.lua              ← book.koplugin/source/fanqie/reading.lua
+  fanqie/reading/aes.lua          ← book.koplugin/crypto/aes.lua
+  fanqie/reading/crypto.lua       ← book.koplugin/source/fanqie/reading/crypto.lua
+  fanqie/reading/device.lua       ← book.koplugin/source/fanqie/reading/device.lua
+  fanqie/reading/sign.lua         ← book.koplugin/source/fanqie/reading/sign.lua
+  fanqie/reading/sm3.lua          ← book.koplugin/source/fanqie/reading/sm3.lua
+  fanqie/reading/text.lua         ← book.koplugin/utils/text.lua
+
+移植时的改动：模块路径改为 fanqie.*；异步回调改为本地 Client 同步调用；
+去掉与月读书库/桌面耦合的部分。协议算法本身未作改动。
+
+--------------------------------------------------------------------------------
+2. 番茄 App 协议逆向资料
+--------------------------------------------------------------------------------
+reading 协议（registerkey / batch_full / 内容解密）与四神签名
+（X-Khronos / X-Ladon / X-Helios / X-Argus）的算法细节，上游可追溯到
+fanqie-re 的 Python 实现（fanqie_crypto.py / fanqie_sign.py）。
+月读与本项目都是该协议实现的 Lua 移植。
+
+段评协议（/novel/commentapi/…）来自 kindle-forge 的
+backend/fanqie/app_api.py 与 backend/fanqie/api.py，
+地址：https://github.com/hesan1232/kindle-forge
+（fanqie/reading/comments.lua 为其 Lua 实现）
+
+本项目仓库根的《番茄段评接口-逆向分析.md》记录了逆向过程与实测结论。
+
+--------------------------------------------------------------------------------
+3. 本仓库作者自有代码中被复用的部分
+--------------------------------------------------------------------------------
+  fanqie/updater.lua      ← koobone.koplugin 的 updater.lua（本项目作者自有）
+  fanqie/updater_ui.lua   ← koobone.koplugin 的 updater_ui.lua（本项目作者自有）
+  fanqie/qrlogin.lua      ← 流程参考 kindle-forge，UI 参考 miuread-koreader
+  fanqie/async.lua        ← 设计参考 KOReader 的 frontend/ui/trapper.lua
+
+koobone.koplugin 的 updater 为独立实现（仅在设计上参考了觅阅 miuread），
+不包含 miuread 的代码。
+
+--------------------------------------------------------------------------------
+4. 运行宿主
+--------------------------------------------------------------------------------
+KOReader（https://github.com/koreader/koreader）以 GNU AGPLv3 发布。
+本插件通过 KOReader 的插件机制加载并对其 ReaderLink / ReaderToc /
+ReaderPaging / ReaderRolling 打补丁，属于在 AGPLv3 程序内运行。
+GPLv3 与 AGPLv3 相互兼容（AGPLv3 §13），两者的源码要求均已满足：
+本插件的发布包内即为完整 Lua 源码。

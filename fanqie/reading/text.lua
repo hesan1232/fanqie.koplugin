@@ -4,6 +4,12 @@
 纯 Lua，零 KOReader 依赖。
 
 @module fanqie.reading.text
+--
+-- 版权与许可：
+--   Copyright (C) 月读 (AnkioTomas/moon) contributors
+--   本文件移植自月读的 KOReader 插件（book.koplugin），原作以 GNU GPLv3 发布。
+--   本仓库整体以 GPL-3.0-only 分发，全文见根目录 LICENSE，
+--   上游来源清单见 THIRD_PARTY_NOTICES.txt。
 --]]
 
 local Text = {}
