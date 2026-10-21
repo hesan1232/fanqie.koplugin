@@ -50,6 +50,12 @@ local M = {
     shelf_known = {},
     -- 「退出阅读时已问过是否加入书架」的书号集合（进程内节流，见 main.lua）
     shelf_prompted = {},
+    -- 「正在切章 / 换书」标记：`showReaderUI` 置 true，新文档 `ReaderReady` 清掉。
+    -- 🔴 用来把「切章」和「真的离开这本书」区分开 —— 两个动作都会走
+    --    `onCloseDocument`，而靠「延后一拍看 ReaderUI.instance 在不在」去猜时序
+    --    在慢设备上会被「旧实例已关、新实例还没建好」的窗口期骗到，
+    --    表现就是「每开一章都弹一次加入书架」（v2.16.24 修的就是这个）。
+    chapter_switch_pending = false,
     -- 「到达文档末尾时的操作」原值备份（见 main.lua 的 _mute/_restoreEndDocumentAction）。
     -- 🔴 三态必须分清：
     --   nil   = 还没覆盖过（不需要还原）

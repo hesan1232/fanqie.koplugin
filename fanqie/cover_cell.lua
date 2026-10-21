@@ -61,7 +61,7 @@ local CoverCell = {}
 -- 🔴 构建标记：随每次改动本文件手动更新。「关于」里会显示它 —— 用户报告
 -- 「改了没生效」时，先看这个标记对不对：标记是旧的 ⇒ 设备上这份文件**没换上**，
 -- 是解压/覆盖环节的问题，别去改代码。
-CoverCell.BUILD = "20261017a"
+CoverCell.BUILD = "20261021a"
 
 -- 封面宽高比 2:3（与番茄封面一致，也与 book.koplugin 的 `cw * 3 / 2` 同口径）
 local COVER_RATIO = 1.5
@@ -429,10 +429,17 @@ function CoverCellWidget:init()
     -- ⚠️ 状态徽章**不在这里**：它叠在封面右上角（见上面 `cover_stack`），
     --    一旦放回这个纵向序列就会重新占高度、把书名/进度条挤出去。
 
-    local group = CenterContainer:new{
-        dimen = Geom:new{ w = m.slot_w, h = m.cell_h },
-        VerticalGroup:new(kids),
-    }
+    -- 🔴 整格内容**顶部对齐**（v2.16.24）：以前外面套一层
+    --    `CenterContainer{dimen={slot_w, cell_h}}` 做垂直居中，内容一旦比 `cell_h`
+    --    高（字号/字体度量差一两像素就够），居中会把溢出量**上下各分一半** ——
+    --    上面那一半正好画到上一行（书城里就是「排序/状态」那排胶囊）身上，
+    --    因为 `item_group` 在控件行之后绘制、把胶囊盖住。用户看到的就是
+    --    「网格第一行和排序状态重合」。
+    --    现在直接把 VerticalGroup 交给 `box`（FrameContainer 从左上角画子件），
+    --    溢出只会往下走；`metrics` 已经把 `title_extra` 按行预留好，正常不溢出。
+    --    ⚠️ 不要换成 `TopContainer`：它只是 WidgetContainer 的空壳，而且
+    --    `ui/widget/container/topcontainer` 在回归 harness 里没有桩。
+    local group = VerticalGroup:new(kids)
 
     -- 选中态：整格铺一层浅底。背景常驻（FrameContainer 只在有 background 时才画），
     -- 尺寸不随选中变化 ⇒ 不会引起重排/抖动。

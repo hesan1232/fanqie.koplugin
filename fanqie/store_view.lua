@@ -545,35 +545,48 @@ end
 local function detach_control_row(menu, key)
     local old = menu[key]
     if not old then return end
-    for i = #menu.content_group, 2, -1 do
-        if menu.content_group[i] == old then
-            table.remove(menu.content_group, i)
+    local group = menu.item_group
+    for i = #group, 1, -1 do
+        if group[i] == old then
+            table.remove(group, i)
         end
     end
     -- HorizontalGroup 是 WidgetContainer：free() 会递归释放里面的 Button/TextWidget
     if old.free then pcall(old.free, old) end
     menu[key] = nil
+    if group.resetLayout then group:resetLayout() end
 end
 
---- 把 tab 栏插进 `content_group`（title 栏与 item_group 之间）的 2 号位。
---- 旧 tab 栏先摘除并释放（updateItems 重建不发事件 —— 释放要自己做，同 item_group）。
+--- 控件行（tab 栏 / 筛选行）挂在 **`item_group` 里**，不挂 `content_group`。
+---
+--- 🔴 v2.16.24 改：以前插进 `content_group`（[1]=title 栏、[2]=tab、[3]=筛选、
+---    [4]=item_group）。理论上 `VerticalGroup` 会把 item_group 排在控件行**下面**，
+---    但实测书城网格模式下**第一行封面会压住排序/状态那排胶囊** —— 说明这条
+---    「靠 content_group 的 offsets 把控件行让出来」的链子在真机上并不可靠
+---    （`VerticalGroup` 的 `_size`/`_offsets` 是带缓存的，`table.insert` 不会让它
+---    失效；网格行又是由 `item_group` 自己铺的，两套偏移一错位就整排上移）。
+---    现在控件行与网格行是**同一个 VerticalGroup 的兄弟节点**：要么一起往下排，
+---    要么一起不排，结构上不可能再互相压住。
+---    代价只是 `item_group:clear()` 会连控件行一起 free ⇒ `updateItems` 里必须
+---    先把 `_store_tab_row` / `_store_filter_row` 的引用丢掉，免得二次 free。
 function StoreView.attach_tab_row(menu, row)
     detach_control_row(menu, "_store_tab_row")
     if not row then return 0 end
-    -- content_group = VerticalGroup{ [1]=title 栏, [2]=item_group }：插在 2 号位
-    table.insert(menu.content_group, 2, row)
+    table.insert(menu.item_group, 1, row)
     menu._store_tab_row = row
+    if menu.item_group.resetLayout then menu.item_group:resetLayout() end
     return row_height(row)
 end
 
---- 把筛选行插在 tab 行**之后**（没有 tab 行就是 2 号位）。
+--- 把筛选行插在 tab 行**之后**（没有 tab 行就是 1 号位）。
 --- 必须后于 `attach_tab_row` 调用（顺序 = tab 在上、筛选在下）。
 function StoreView.attach_filter_row(menu, row)
     detach_control_row(menu, "_store_filter_row")
     if not row then return 0 end
-    local at = menu._store_tab_row and 3 or 2
-    table.insert(menu.content_group, at, row)
+    local at = menu._store_tab_row and 2 or 1
+    table.insert(menu.item_group, at, row)
     menu._store_filter_row = row
+    if menu.item_group.resetLayout then menu.item_group:resetLayout() end
     return row_height(row)
 end
 
@@ -640,6 +653,11 @@ end
 function StoreMenu:updateItems(select_number, no_recalculate_dimen)
     local old_dimen = self.dimen and self.dimen:copy()
     self.layout = {}
+    -- 🔴 控件行现在挂在 item_group 里（见 attach_tab_row 的说明）⇒ clear() 会连
+    --    它们一起 free。先把引用丢掉：否则后面的 attach_* 会对一个**已释放**的
+    --    Button 再来一次 free（double free，墨水屏上直接花屏/闪退）。
+    self._store_tab_row = nil
+    self._store_filter_row = nil
     self.item_group:clear()
     self.page_info:resetLayout()
     self.return_button:resetLayout()
@@ -662,6 +680,10 @@ function StoreMenu:updateItems(select_number, no_recalculate_dimen)
     local filter_row = StoreView.build_filter_row(self)
     local filter_h = StoreView.attach_filter_row(self, filter_row)
 
+    -- 控件行挂在 item_group 头部 ⇒ 它们**实际占掉**垂直流里的一段高度，算每页条目数时
+    -- 必须把这部分扣掉（否则最后一行会被挤出屏幕）。
+    -- ⚠️ 只落到 `_store_eff_ah`，绝不能写回 `self.available_height`（v2.16.0 的累加
+    --    bug 就是那样来的：封面回填每重绘一次再扣一次，条目越压越扁）。
     local eff_ah = ah
     local control_h = tab_h + filter_h
     if control_h > 0 and ah > control_h then eff_ah = ah - control_h end

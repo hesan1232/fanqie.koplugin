@@ -375,6 +375,11 @@ function Download.execute(parent, book, chapters, start_idx, end_idx)
         local fetch_opts = state.review_enabled
             and { review = true, skip_cache_index = true, heartbeat_path = hb_path }
             or { skip_cache_index = true, heartbeat_path = hb_path }
+        -- 段评「整段可点」（v2.16.24）：预下载的章节也要生成整段锚点，否则
+        -- 预下载来的章节点段落没反应、手动重下的章节又能点 —— 行为不一致最难查。
+        if settings and settings.getParaTapWhole then
+            fetch_opts.para_tap_whole = settings:getParaTapWhole() ~= false
+        end
         local work_fn = function()
             local path = Content.fetch_chapter_html(client, settings, b, chapter, fetch_opts)
             return {

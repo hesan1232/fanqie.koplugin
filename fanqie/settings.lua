@@ -87,6 +87,9 @@ local defaults = {
     },
     -- 段评开关（持久化到用户设置，重启后保持）
     para_review_enabled = false,
+    -- 段评「整段可点」：把有段评的段落正文也包成链接（点段落任意位置打开该段评论，
+    -- 段落带下划线提示）。默认开 —— 段评数字是上标小字，单独点不好点。
+    para_tap_whole = true,
     download_dir = "",
     config_loaded = true,
 }
@@ -499,6 +502,16 @@ end
 
 function Settings:setParaReviewEnabled(enabled)
     self:set("para_review_enabled", enabled == true)
+    self:flush()
+end
+
+-- 段评「整段可点」开关持久化读写
+function Settings:getParaTapWhole()
+    return self:get("para_tap_whole", true) == true
+end
+
+function Settings:setParaTapWhole(enabled)
+    self:set("para_tap_whole", enabled == true)
     self:flush()
 end
 

@@ -262,7 +262,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.23",
+    version = Info and Info.version or "2.16.24",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -374,6 +374,8 @@ end
 --- 用户从「最近阅读 / 文件管理器」直接打开章节 html 都会经过这里。
 --- ⚠️ 返回 nil（不消费事件）：别把 ReaderReady 从别的模块手里截走。
 function FanQiePlugin:onReaderReady()
+    -- 新文档已就绪 ⇒ 「正在切章」结束（见 showReaderUI 里的标志说明）
+    _state.chapter_switch_pending = false
     local ok, err = pcall(function() self:_muteEndDocumentAction() end)
     if not ok and Log and Log.error then
         Log.error("mute end_document_action failed:", tostring(err))
@@ -2429,6 +2431,21 @@ function FanQiePlugin:getSettingsMenuItems()
             end,
         },
         {
+            -- v2.16.24：段评数字是上标小字，单独点不好点 ⇒ 有段评的段落整段可点
+            -- （段落带下划线提示）。关掉后只认那个数字。
+            text = _("段评整段可点"),
+            checked_func = function()
+                return self.settings:getParaTapWhole() ~= false
+            end,
+            keep_menu_open = true,
+            callback = function()
+                self.settings:setParaTapWhole(not (self.settings:getParaTapWhole() ~= false))
+                -- 已有缓存章节在打开时会自动按新开关升级/回退吗？不会 —— 升级只做
+                -- 「补齐」，不删已有的整段锚点。所以这里提示一句，避免用户以为没生效。
+                self:showInfo(_("已保存。新打开（或重新下载）的章节生效。"), 2)
+            end,
+        },
+        {
             text = _("读取进度同步"),
             checked_func = function()
                 local sync = self.settings:get("sync", {})
@@ -3386,6 +3403,11 @@ function FanQiePlugin:_promptAddShelfOnLeave()
     local book_id = tostring(book.book_id)
     _state.shelf_prompted = _state.shelf_prompted or {}
     if _state.shelf_prompted[book_id] then return end
+    -- 切章 / 换书不是「离开这本书」：显式标志，别猜时序（见 showReaderUI）。
+    if _state.chapter_switch_pending then
+        if Log then Log.info("shelf prompt skipped: chapter switch") end
+        return
+    end
 
     local self_ref = self
 
@@ -3936,6 +3958,11 @@ function FanQiePlugin:navigateToChapter(book, chapters, chapter_index, opts)
         heartbeat_path = self:_downloadHeartbeatPath(book),
     }
     if review_enabled then fetch_opts.review = true end
+    -- 段评「整段可点」（v2.16.24）：段落正文也包成锚接
+    -- （点段落任意位置即可打开该段评论），设置里可关。
+    if self.settings and self.settings.getParaTapWhole then
+        fetch_opts.para_tap_whole = self.settings:getParaTapWhole() ~= false
+    end
 
     local item_id = tostring(chapter.itemId)
     local cached_chapters = getCachedChapters(self, book)
@@ -4046,6 +4073,15 @@ function FanQiePlugin:showReaderUI(path, chapter)
     -- 章节切换已完成（新文档即将加载），清除导航标志
     _state.setChapterNavigating(false)
 
+    -- 「正在切章/换书」：`onCloseDocument` 在切章时也会走（旧实例 onClose），
+    -- 而「是否加入书架」的提示只该在**真的离开这本书**时弹。以前靠
+    -- 「延后一拍看 ReaderUI.instance 在不在」去猜，慢设备上会落在
+    -- 「旧实例已关、新实例还没建好」的窗口里 ⇒ 每开一章弹一次（v2.16.24 修）。
+    -- 现在用一个显式标志：这里置 true，新文档的 `ReaderReady` 清掉；
+    -- 万一新文档根本没开起来（打开失败/被取消），10 秒兜底清一次。
+    _state.chapter_switch_pending = true
+    UIManager:scheduleIn(10, function() _state.chapter_switch_pending = false end)
+
     local ok, err = pcall(function()
         -- 不用 switchDocument（其内部先 onClose 再 showReader，中间 forceRePaint 会闪现书架）
         -- 直接用 showReader：doShowReader 在 nextTick 中关闭旧实例并打开新实例，无闪现
@@ -4055,6 +4091,7 @@ function FanQiePlugin:showReaderUI(path, chapter)
         ReaderUI:showReader(path, nil, true)  -- seamless=true 隐藏"打开文件"提示
     end)
     if not ok then
+        _state.chapter_switch_pending = false
         Log.error("showReaderUI failed:", log_error(err))
         self:showError(T(_("打开文档失败:\n%1"), display_error(err)))
         return
@@ -4148,6 +4185,11 @@ function FanQiePlugin:preDownloadChapters(book, chapters, current_index)
         heartbeat_path = self:_downloadHeartbeatPath(book),
     }
     if review_enabled then fetch_opts.review = true end
+    -- 段评「整段可点」（v2.16.24）：段落正文也包成锚接
+    -- （点段落任意位置即可打开该段评论），设置里可关。
+    if self.settings and self.settings.getParaTapWhole then
+        fetch_opts.para_tap_whole = self.settings:getParaTapWhole() ~= false
+    end
 
     local cached_chapters = getCachedChapters(self, book)
     local client = self.client
@@ -4462,6 +4504,11 @@ function FanQiePlugin:onFanQiePrevChapter()
         heartbeat_path = self:_downloadHeartbeatPath(book),
     }
     if review_enabled then fetch_opts.review = true end
+    -- 段评「整段可点」（v2.16.24）：段落正文也包成锚接
+    -- （点段落任意位置即可打开该段评论），设置里可关。
+    if self.settings and self.settings.getParaTapWhole then
+        fetch_opts.para_tap_whole = self.settings:getParaTapWhole() ~= false
+    end
 
     -- 下载完成后的跳章逻辑（缓存命中与异步下载共用）
     local function finish_prev(p)
@@ -4577,6 +4624,11 @@ function FanQiePlugin:onEndOfBook()
         heartbeat_path = self:_downloadHeartbeatPath(book),
     }
     if review_enabled then fetch_opts.review = true end
+    -- 段评「整段可点」（v2.16.24）：段落正文也包成锚接
+    -- （点段落任意位置即可打开该段评论），设置里可关。
+    if self.settings and self.settings.getParaTapWhole then
+        fetch_opts.para_tap_whole = self.settings:getParaTapWhole() ~= false
+    end
 
     -- 下载完成后的跳章逻辑（缓存命中与异步下载共用）
     local function finish_next(p)
