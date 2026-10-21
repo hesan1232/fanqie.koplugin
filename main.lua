@@ -262,7 +262,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.24",
+    version = Info and Info.version or "2.16.25",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
