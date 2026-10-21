@@ -882,11 +882,13 @@ end
 ---    `_probe_rank_subcat`：1141 主分类 8372B vs 511/516/1079 二级全空表），
 ---    所以树只做在分类浏览这边，二级分类走书库接口。
 --- 折叠状态按性别记在 plugin 上：选择器关掉再开还留着，男/女频两棵树互不干扰。
----@param on_pick function(category|nil) 选中回调（nil = 「全部」）
+---@param on_pick function(category|nil) 选中回调（nil = 「全部」；主分类与「全部」走它）
 ---@param reshow function() 切换折叠后**重开本选择器**的回调。选择器是静态列表
 ---   没有原地重绘；「关掉重开」是现有选择器交互里最稳的路（换性别/换分类也这么走），
 ---   且 show_chooser 开头自带 close_chooser 防叠加。
----@param opts table { all_first=true → 「全部」放最前；all_last=true → 放最后 }
+---@param opts table { all_first=true → 「全部」放最前；all_last=true → 放最后；
+---   sub_pick=function(category) → 二级分类的选中回调（缺省同 on_pick。榜单方用它把
+---   二级分类跳到书库 —— 榜单接口只认主分类 id） }
 local function category_tree_entries(plugin, gender, list, on_pick, reshow, opts)
     opts = opts or {}
     local fold = plugin._store_cat_fold
@@ -898,9 +900,14 @@ local function category_tree_entries(plugin, gender, list, on_pick, reshow, opts
     if opts.all_first then
         entries[#entries + 1] = { text = _("全部"), callback = function() on_pick(nil) end }
     end
+    -- 二级分类的选中回调：分类浏览里二级与主分类同路（都走书库接口）；榜单里
+    -- **接口只认主分类** ⇒ 二级分类由调用方指定另一条路（跳书库，见 sub_pick）。
+    local sub_pick = opts.sub_pick or on_pick
     local groups = Store.group_categories(list)
+    local has_main = false
     for _i, g in ipairs(groups) do
         if g.label == "主分类" then
+            has_main = true
             -- 一级分类：常展开；组头保持不可点的分隔条样式（与旧版一致，点了没反应
             -- 的行会让人犹豫，所以这里**故意**沿用 separator 而不是做成可点的折叠头）
             entries[#entries + 1] = {
@@ -926,11 +933,26 @@ local function category_tree_entries(plugin, gender, list, on_pick, reshow, opts
                     -- 展开后缩进一级（全角空格），组名前缀不再需要 —— 头一行就是组名
                     entries[#entries + 1] = {
                         text = "　" .. c.name,
-                        callback = function() on_pick(c) end,
+                        callback = function() sub_pick(c) end,
                     }
                 end
             end
         end
+    end
+    if not has_main and #entries > 0 then
+        -- 🔴 兜底：分类树拿不到「主分类」分组（接口异常/字段变了）时，别把用户
+        --    锁死在几个折叠组里 —— 退回旧版压平行为，全部条目走主选中回调。
+        entries = {}
+        if opts.all_first then
+            entries[#entries + 1] = { text = _("全部"), callback = function() on_pick(nil) end }
+        end
+        for _i, c in ipairs(list or {}) do
+            entries[#entries + 1] = { text = c.name, callback = function() on_pick(c) end }
+        end
+        if opts.all_last then
+            entries[#entries + 1] = { text = _("全部"), callback = function() on_pick(nil) end }
+        end
+        return entries
     end
     if opts.all_last then
         entries[#entries + 1] = { text = _("全部"), callback = function() on_pick(nil) end }
@@ -1323,47 +1345,27 @@ open_rank_category = function(plugin, gender, mold, category, menu)
     return m
 end
 
---- 原创榜的分类入口列表：只取「主分类」，与榜单页列出的 19/18 项集合完全一致
---- （实测两边 category_id 集合逐一相同：男频 19 个、女频 18 个）。
---- 传了 menu 就**原地应用**（不重开菜单）；没传（榜单入口链上来的）才开新菜单。
-local function rank_category_entries(plugin, gender, mold, list, menu)
-    local entries = {}
-    local function on_pick(c)
-        if menu then
-            apply_rank_category(plugin, menu, gender, mold, c)
-        else
-            open_rank_category(plugin, gender, mold, c)
-        end
-    end
-    for _i, c in ipairs(list or {}) do
-        if c.label == "主分类" then
-            entries[#entries + 1] = {
-                text = c.name,
-                callback = function() on_pick(c) end,
-            }
-        end
-    end
-    if #entries == 0 then
-        -- 分类树拿不到「主分类」（接口异常/字段变了）时，别给用户一个空菜单
-        for _i, c in ipairs(list or {}) do
-            entries[#entries + 1] = {
-                text = c.name,
-                callback = function() on_pick(c) end,
-            }
-        end
-    end
-    return entries
-end
-
---- 选分类（只列「主分类」，与榜单页列出的 19/18 项完全一致）。
+--- 选分类（v2.16.26 树状）：主分类可点 = 换榜单分类（与榜单页列出的 19/18 项
+--- 集合完全一致）；主题/角色/情节折叠成一行可展开 —— 但 🔴 **榜单接口只认主分类
+--- id**（二级分类回 152B 空表，2026-10-21 探针 `_probe_rank_subcat.sh`），所以
+--- 点二级分类**跳到该分类的书库列表**（书库接口真实可用，按最热排序）。
 --- 分类树复用书城那份 `category_list`，不再单独请求榜单接口。
 --- menu 参数：榜单菜单的「换分类」传自己进来 → 选中后原地换，不重开菜单。
 open_rank_categories = function(plugin, gender, mold, menu)
     local rank_label = Store.gender_label(gender) .. Store.rank_mold_label(mold)
     ensure_categories(plugin, gender, function(list)
+        local function pick_main(c)
+            if menu then
+                apply_rank_category(plugin, menu, gender, mold, c)
+            else
+                open_rank_category(plugin, gender, mold, c)
+            end
+        end
         StoreView.show_chooser{
             title = T(_("%1 · 选择分类"), rank_label),
-            entries = rank_category_entries(plugin, gender, mold, list, menu),
+            entries = category_tree_entries(plugin, gender, list, pick_main,
+                function() open_rank_categories(plugin, gender, mold, menu) end,
+                { sub_pick = function(c) open_library(plugin, gender, c, nil) end }),
         }
     end)
 end

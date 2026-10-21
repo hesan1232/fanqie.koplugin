@@ -51,7 +51,13 @@ local Content = {}
 ---   * 没有这个 meta = 旧文件 ⇒ 版本 0，同样走升级；
 ---   * 版本相同 ⇒ 一个字节都不碰（只读前 600 字节判断，不读全文）。
 --- 🔴 改动本文件产出的 HTML 结构 / 内置样式时 **+1**，否则老缓存永远不会更新。
-Content.CHAPTER_FORMAT = 1
+Content.CHAPTER_FORMAT = 2
+-- v2.16.26 = 2：「整段可点」的视觉标记从实线下划线（text-decoration）换成
+-- 虚线（border-bottom dashed）。crengine 的 `text-decoration` 只有
+-- underline/overline/line-through/blink，没有 style 属性 ⇒ CSS 画不出虚线；
+-- 但内联元素的 border 走 lvtextfm 的 drawBorder，`border-style: dashed`
+-- 会映射成 dot=interval=3×border_width 的虚线（lvtextfm.cpp drawBorder）。
+-- 老缓存里是旧的 underline 规则 ⇒ 靠结构版本 +1 触发就地升级（见 upgrade_chapter_file）。
 
 --- 段评相关的内置样式。缓存升级（`upgrade_chapter_file`）与新下载
 --- （`save_chapter_html`）共用这一份，避免两边写两套、改一处忘一处。
@@ -61,8 +67,11 @@ Content.CHAPTER_FORMAT = 1
 ---     「比正文小太多、不好点」⇒ 提到 `0.72em`（仍是上标，不打断行距观感），
 ---     左右各留 2px 让命中区宽一点。
 ---   * `a.para-hit`：**整段可点**。把有段评的段落正文包进一个自指链接
----     （`href="fanqie-para:#N"`），点段落任意位置都能打开该段评论；下划线是
----     「这一段有评论」的视觉提示。`color: inherit` 保证正文颜色不被链接色改掉。
+---     （`href="fanqie-para:#N"`），点段落任意位置都能打开该段评论；虚线下划线
+---     （border-bottom dashed）是「这一段有评论」的视觉提示 —— 用 border 而不是
+---     text-decoration，因为 crengine 不支持虚线的 text-decoration（见上）。
+---     边框色不写 = 继承 currentcolor，跟随正文颜色。`text-decoration: none`
+---     显式关掉链接默认的下划线，避免和 border 双重标记。
 Content.PARA_CSS = [[
 a.para-comment {
   font-size: 0.72em !important;
@@ -72,7 +81,9 @@ a.para-comment {
 }
 a.para-hit {
   color: inherit;
-  text-decoration: underline;
+  text-decoration: none;
+  border-bottom-width: 1px;
+  border-bottom-style: dashed;
 }
 ]]
 
@@ -409,10 +420,14 @@ end
 
 --- 老缓存章节的**就地升级 / 降级**（不联网、不动正文，离线也能生效）。
 ---
---- 三种情况会改写文件，改完都幂等（再调一次什么都不做）：
+--- 四种情况会改写文件，改完都幂等（再调一次什么都不做）：
 ---   1. **结构版本落后**（含「没有这个 meta」的旧文件）：在 `</head>` 前追加一份
 ---      `Content.PARA_CSS` —— 后出现的同名规则覆盖前面的（同优先级按顺序，
 ---      `font-size` 那条还带 `!important`，稳）；
+---   1b. **format < 2**：老缓存里「整段可点」的标记还是 v2.16.24 的实线下划线
+---      （`text-decoration: underline`），原地换成 v2.16.26 的虚线 border ——
+---      全文件只有 para-hit 规则里有 underline（气泡是 none，正文 css 无下划线），
+---      按属性串替换即命中且只命中这一处；
 ---   2. **整段锚点状态与当前设置不符**：
 ---      * 设置开 ⇒ 给有段评的段落补 `a.para-hit`（老文件里气泡 href 是
 ---        `fanqie-para:N` 无 `#`，`wrap_para_hits` 两种都认）；
@@ -448,9 +463,13 @@ function Content.upgrade_chapter_file(path, want_hit)
     f:close()
     if type(html) ~= "string" or html == "" then return false end
 
-    -- 1. 样式（只补一次：带 paras-hit 规则的文件必然已经补过）
+    -- 1. 样式（只补一次：带 para-hit 规则的文件必然已经补过）
     if not html:find("a.para%-hit", 1, false) then
         html = html:gsub("</head>", "<style>\n" .. Content.PARA_CSS .. "</style>\n</head>", 1)
+    elseif (cur or 0) < 2 and html:find("text-decoration: underline", 1, true) then
+        -- 1b. format < 2：实线下划线 → 虚线 border（v2.16.26 的样式，见 PARA_CSS）
+        html = html:gsub("text%-decoration: underline;",
+            "text%-decoration: none;\n  border%-bottom%-width: 1px;\n  border%-bottom%-style: dashed;")
     end
     -- 2. 整段锚点：开则补、关则拆
     if want == 1 then
