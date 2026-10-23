@@ -1,16 +1,16 @@
 {
-  "version": "2.16.26",
-  "name": "番茄小说 2.16.26",
+  "version": "2.16.27",
+  "name": "番茄小说 2.16.27",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.26/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.27/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.26/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.26/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.26/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.26/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.27/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.27/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.27/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.27/fanqie.koplugin.zip"
   ],
-  "size": 445560,
-  "sha256": "ee4ba2b809640d6cc644bb86b7312c1ff3de91c983a82d3cfcda6125b95084bd",
-  "notes": "- **段评整段标记改虚线**：`text-decoration: underline` → `border-bottom: 1px dashed`\n  （crengine 的 text-decoration 没有虚线样式，但内联 border 的 dashed 走 drawBorder\n  的 dot/interval 画线）。缓存结构版本 +1，**老章节打开时就地刷新样式**（离线生效）。\n- **榜单分类选择器也树状**：主分类可点 = 换榜单分类；主题/角色/情节可展开，点二级\n  分类跳到该分类的书库列表（按最热排序）——榜单接口实测只认主分类 id，二级分类\n  没法直接查榜单，跳书库是它真实可用的形态。"
+  "size": 445774,
+  "sha256": "d0ae9adca460e04f1d52ae9ebc7be84965f2caccfe937af855b753417c935a86",
+  "notes": "- 书架排序新增「**按更新时间**」（PR #12 by @tiev0li）：按书籍最后章节更新时间排序，\n  默认倒序（最近更新的书在最前），再点一次翻正序，与其他排序键交互一致。\n  数据取书架缓存里已有的 `last_chapter_update_time`，无需重新登录或刷新；老缓存缺该\n  字段时排在最后，不报错。"
 }
