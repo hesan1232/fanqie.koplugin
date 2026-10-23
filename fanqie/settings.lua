@@ -534,7 +534,7 @@ end
 -- ===== 书架排序持久化（参考 koobone）=====
 -- 键不合法时回落 last_read，避免手改 settings 文件写坏排序导致书架顺序随机。
 local SHELF_SORT_KEYS = {
-    last_read = true, title = true, progress = true, shelf_order = true,
+    last_read = true, last_update = true, title = true, progress = true, shelf_order = true,
 }
 
 function Settings:get_shelf_sort()

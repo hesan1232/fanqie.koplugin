@@ -541,9 +541,10 @@ local SORT_LABELS = {
     title = _("按书名"),
     progress = _("按阅读进度"),
     shelf_order = _("按加入书架"),
+    last_update = _("按更新时间"),
 }
 
-local SORT_ORDER = { "last_read", "title", "progress", "shelf_order" }
+local SORT_ORDER = { "last_read", "last_update", "title", "progress", "shelf_order" }
 
 local function sort_value(book, key)
     if key == "last_read" then
@@ -551,6 +552,9 @@ local function sort_value(book, key)
         return tonumber(book.read_timestamp) or 0
     elseif key == "progress" then
         return tonumber(book.progress) or 0
+    elseif key == "last_update" then
+        -- 最后章节更新时间（unix 秒）；缺失按 0（排最后）
+        return tonumber(book.last_chapter_update_time) or 0
     elseif key == "shelf_order" then
         -- 接口原始顺序（加入书架顺序）；缺失按极大值
         return tonumber(book.shelf_index) or math.huge
