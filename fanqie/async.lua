@@ -296,8 +296,10 @@ function Async.run(work_func, on_done, opts)
         reap(pid_ref, fd_ref)
     end
 
+    -- 必须声明在 cancel 之前：Lua local 的作用域从声明语句开始。
+    local done_called = false
     handle.cancel = function()
-        if handle._cancelled then return end   -- 幂等：连点两次取消不会重复收尸
+        if handle._cancelled or done_called then return end   -- 幂等：完成/取消后不重复收尸
         handle._cancelled = true
         untrack()
         abort_subprocess()
@@ -310,8 +312,17 @@ function Async.run(work_func, on_done, opts)
     end
 
     -- 轮询函数：每次由 UIManager:scheduleIn 在 UI 线程唤醒。
+    -- 完成回调只能到达一次；轮询链本身异常也必须按失败收口，不能让 busy 永久挂住。
+    local function finish(ok, result, err)
+        if done_called or handle._cancelled then return end
+        done_called = true
+        untrack()
+        if on_done then on_done(ok, result, err) end
+    end
+
     local function poll()
         if handle._cancelled then return end
+        local poll_ok, poll_err = pcall(function()
 
         -- 先看心跳：只要子进程还在推进（文件 mtime 变了），就把超时时钟往后推。
         -- ⚠️ 必须放在超时判断**之前**：否则「刚好在到点那一刻又推进了一页」
@@ -321,9 +332,8 @@ function Async.run(work_func, on_done, opts)
         -- 超时检测
         if os.difftime(os.time(), start_clock) > timeout then
             if ok_Log then Log.warn("[async] 子进程超时", timeout, "s（无进展），终止") end
-            untrack()
             abort_subprocess()
-            if on_done then on_done(false, nil, "async timeout") end
+            finish(false, nil, "async timeout")
             return
         end
 
@@ -385,18 +395,16 @@ function Async.run(work_func, on_done, opts)
             -- subprocess_done 为真时 reap 会立即返回，不产生额外开销。
             reap(pid, nil, 0)
 
-            untrack()
-
-            if on_done and not handle._cancelled then
-                if result_ok then
-                    on_done(true, result_val, nil)
-                else
-                    on_done(false, nil, result_err)
-                end
-            end
+            finish(result_ok, result_val, result_err)
         else
             -- 未完成，继续轮询
             UIManager:scheduleIn(poll_interval, poll)
+        end
+        end)
+        if not poll_ok then
+            if ok_Log then Log.warn("[async] poll 异常，按失败收口:", sanitize_err(poll_err)) end
+            pcall(abort_subprocess)
+            finish(false, nil, "async poll error: " .. sanitize_err(poll_err))
         end
     end
 
