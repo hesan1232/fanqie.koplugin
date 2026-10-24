@@ -201,6 +201,19 @@ local function buildRegisterRequest(client, profile)
         }
 end
 
+-- 注册响应可能把 19 位编号写成 JSON 裸数字。解码前先补引号，避免 rapidjson
+-- 按 double 舍入，之后把失真的设备身份持久化。只处理这两个已知编号字段。
+local function quote_bigint_ids(text)
+    if type(text) ~= "string" then return text end
+    for _i, key in ipairs({ "device_id", "install_id" }) do
+        local pattern = '("' .. key .. '"%s*:%s*)(%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d+)'
+        -- 整段返回会再次经过 gsub 的 % 展开；只替换数字段，避免 JSON 其它
+        -- 字段里的百分号被误解释，也不要把超长数字当普通 number 处理。
+        text = text:gsub(pattern, "%1\"%2\"")
+    end
+    return text
+end
+
 --- 同步向 log.snssdk.com 注册，拿到本机专属 device_id/install_id。
 ---@param client table 本地 HTTP 客户端（Client 实例）
 ---@param settings table
@@ -224,7 +237,7 @@ function Device.register(client, settings)
     if not text or text == "" then
         return nil, "device_register 空响应"
     end
-    local ok, data = pcall(function() return client:json_decode(text) end)
+    local ok, data = pcall(function() return client:json_decode(quote_bigint_ids(text)) end)
     if not ok or type(data) ~= "table" then
         return nil, "device_register 响应无效"
     end
