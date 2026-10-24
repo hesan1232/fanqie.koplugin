@@ -2807,7 +2807,13 @@ function FanQiePlugin:showBookList(books)
     -- 封面缓存每天最多清一次（见 cover_cache.maybe_auto_prune）。放在**建菜单之前**：
     -- 菜单一旦建起来，这一屏的 ImageWidget 就持有具体的封面路径了，那时删文件会画出空白格。
     if CoverCache then
-        pcall(CoverCache.maybe_auto_prune, self.settings, self:_coverCacheDirs())
+        local ok_prune, prune_result = pcall(CoverCache.maybe_auto_prune,
+            self.settings, self:_coverCacheDirs())
+        -- 跟本次 TTL 维护同一次扫描，且只在拿到非空完整书架时回收孤儿。
+        -- 空/失败结果在 bookshelf.lua 已被挡住，不会走到这里清空目录。
+        if ok_prune and type(prune_result) == "table" and #books > 0 then
+            pcall(CoverCache.prune_shelf_orphans, self.settings, books)
+        end
     end
     -- 先关闭旧的书架菜单，避免后台刷新后两个书架 UI 叠在一起
     if self.book_list_menu then
@@ -2821,10 +2827,13 @@ function FanQiePlugin:showBookList(books)
 
     for _, book in ipairs(books) do
         if book.cover then
-            local cover_filename = string.gsub(book.title, "[/\\:%*%?\"<>|]", "_") .. ".jpg"
-            local cover_path = cover_cache_dir .. "/" .. cover_filename
+            -- 命名规则统一交给 cover_cache：新名 <book_id>.jpg，
+            -- 找不到时回退旧名 <书名>.jpg（兼容已下载的旧缓存，不强制重下）
+            local cover_path = CoverCache.find(self.settings, book, function(path)
+                return self:_coverCacheUsable(path)
+            end)
             -- 过期封面**当没有**处理：下面 _preloadAllCovers 会重下并覆盖同名文件
-            if self:_coverCacheUsable(cover_path) then
+            if cover_path then
                 book.cover_path = cover_path
             end
         end
@@ -2913,8 +2922,11 @@ function FanQiePlugin:_cacheShelfPageCovers(view, page, first, last, generation,
 
     local cover_cache_dir = self.settings:get_download_dir() .. "/covers"
     if H then H.make_dir(cover_cache_dir) end
-    local cover_filename = string.gsub(book.title, "[/\\:%*%?\"<>|]", "_") .. ".jpg"
-    local cover_path = cover_cache_dir .. "/" .. cover_filename
+    local cover_path = CoverCache.path(self.settings, book)
+    if not cover_path then next_index() return end
+    local existing = CoverCache.find(self.settings, book, function(path)
+        return self:_coverCacheUsable(path)
+    end)
 
     -- 把封面路径回填到当前页 UI（缓存命中与子进程下载完成共用同一段逻辑）
     local function apply_cover(path)
@@ -2936,8 +2948,8 @@ function FanQiePlugin:_cacheShelfPageCovers(view, page, first, last, generation,
         end
     end
 
-    if self:_coverCacheUsable(cover_path) then
-        apply_cover(cover_path)
+    if existing then
+        apply_cover(existing)
         next_index()
         return
     end
@@ -3018,14 +3030,20 @@ function FanQiePlugin:_preloadAllCovers(books)
             return
         end
 
-        local cover_filename = string.gsub(book.title, "[/\\:%*%?\"<>|]", "_") .. ".jpg"
-        local cover_path = cover_cache_dir .. "/" .. cover_filename
+        local cover_path = CoverCache.path(self.settings, book)
+        if not cover_path then
+            UIManager:scheduleIn(0.05, function() preload_one(idx + 1) end)
+            return
+        end
         local book_id = book.book_id or book.bookId
+        local existing = CoverCache.find(self.settings, book, function(path)
+            return self:_coverCacheUsable(path)
+        end)
 
         -- 文件已存在且未过期，设置路径并更新 UI（过期就往下走重下）
-        if self:_coverCacheUsable(cover_path) then
-            book.cover_path = cover_path
-            update_ui_cover(book_id, cover_path)
+        if existing then
+            book.cover_path = existing
+            update_ui_cover(book_id, existing)
             UIManager:scheduleIn(0.05, function() preload_one(idx + 1) end)
             return
         end
