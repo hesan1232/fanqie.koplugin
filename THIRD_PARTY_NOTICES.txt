@@ -58,3 +58,10 @@ KOReader（https://github.com/koreader/koreader）以 GNU AGPLv3 发布。
 ReaderPaging / ReaderRolling 打补丁，属于在 AGPLv3 程序内运行。
 GPLv3 与 AGPLv3 相互兼容（AGPLv3 §13），两者的源码要求均已满足：
 本插件的发布包内即为完整 Lua 源码。
+
+--------------------------------------------------------------------------------
+5. 随包分发的第三方资源
+--------------------------------------------------------------------------------
+  fonts/NotoEmoji-Regular.ttf   ← Google Noto Emoji
+    许可：SIL Open Font License 1.1（全文见 fonts/LICENSE）
+    用途：段评界面中的 emoji 字形回退，随插件一并分发。

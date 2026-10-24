@@ -58,6 +58,7 @@ local ButtonTable = require("ui/widget/buttontable")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
 local Font = require("ui/font")
+local EmojiFont = require("fanqie.emoji_font")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
@@ -79,6 +80,8 @@ local _ = ok_gettext and gettext or function(text) return text end
 -- T 必须是 util.template（%1 占位符），见 store.lua 的同名教训。
 local ok_ffiutil, ffiutil = pcall(require, "ffi/util")
 local T = ok_ffiutil and ffiutil.template or function(fmt, ...) return fmt end
+
+local Emoticon = require("fanqie.emoticon")
 
 local Screen = Device.screen
 
@@ -234,8 +237,8 @@ function CommentView:_append_block(group, block, content_w, indent)
     local head = block.head
     if type(head) == "string" and head ~= "" then
         body[#body + 1] = TextBoxWidget:new{
-            text = head,
-            face = Font:getFace("smallinfofont", FONT_HEAD),
+            text = Emoticon.decode(head),
+            face = EmojiFont.with_fallback(Font:getFace("smallinfofont", FONT_HEAD)),
             width = text_w,
             alignment = "left",
             fgcolor = Blitbuffer.COLOR_BLACK,
@@ -245,8 +248,8 @@ function CommentView:_append_block(group, block, content_w, indent)
     end
     if type(block.text) == "string" and block.text ~= "" then
         body[#body + 1] = TextBoxWidget:new{
-            text = block.text,
-            face = Font:getFace("x_smallinfofont", FONT_BODY),
+            text = Emoticon.decode(block.text),
+            face = EmojiFont.with_fallback(Font:getFace("x_smallinfofont", FONT_BODY)),
             width = text_w,
             alignment = "left",
             -- 一级评论与回复正文**同色**：以前回复是 DARK_GRAY，用户看着像
