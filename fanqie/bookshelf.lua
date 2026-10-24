@@ -194,6 +194,36 @@ end
 -- 这时用本地书架缓存把书名/作者/简介/进度补齐 —— 和 ensureShelfSnapshot 一样
 -- **绝不联网**：网络往返会让菜单卡住，而本地文件（或内存缓存）命中是零成本的。
 -- @return table|nil 命中返回原始记录（调用方只读，不要就地改）
+--- 供阅读统计（fanqie.stats）按书号取书名/作者：内存缓存 → 文件缓存。
+--- 与 findCachedBook 同源，但返回**精简的元数据**且不依赖 self.settings，
+--- 因为统计模块只在 resolve 时拿到 settings，没有 Bookshelf 实例。
+---@param book_id string|number
+---@param settings table
+---@return table|nil { book_id, title, author }
+function Bookshelf.find_book_meta(book_id, settings)
+    if not book_id then return nil end
+    local want = tostring(book_id)
+    local function pick(books)
+        if type(books) ~= "table" then return nil end
+        for _i, b in ipairs(books) do
+            if type(b) == "table" and tostring(b.book_id) == want then
+                return {
+                    book_id = want,
+                    title = b.title or b.book_name or b.name or "",
+                    author = b.author or b.author_name or "",
+                }
+            end
+        end
+        return nil
+    end
+    local found = pick(SHELF_MEM_CACHE)
+    if found then return found end
+    if not settings then return nil end
+    local ok, books = pcall(load_shelf_cache, settings)
+    if not ok then return nil end
+    return pick(books)
+end
+
 function Bookshelf:findCachedBook(book_id)
     if not book_id or not self.settings then return nil end
     local want = tostring(book_id)
