@@ -39,7 +39,9 @@ local UIManager = require("ui/uimanager")
 
 local StoreUI = {}
 
-local PAGE_SIZE = 18        -- 书库接口实测 page_count=30 也能用，取 18 与网页一致
+local PAGE_SIZE = 30        -- v2.16.29 起 18→30：一次多拉一批，本地翻页的网络等待更少
+                            -- （书库接口实测 page_count=30 可用；参照 book.koplugin
+                            -- 「墨水屏上多拉一页就多等一轮网络，批量拉 + 本地切片」的口径）
 local RANK_PAGE = 20
 local COVER_SUBDIR = "store_covers"
 local ASYNC_TAG = "store"
@@ -510,6 +512,29 @@ local function apply_fetch_result(plugin, menu, req, page_index, append, res)
     --    封面链反复重跑，用户看到的是「一直在转圈但什么都没多」。
     if append and added == 0 then state.has_more = false end
 
+    -- 榜单名次编号（v2.16.29）：原创榜自带 currentPos（store.lua 已归一成 rank_pos），
+    -- 其余榜单按**返回顺序**编号，跨页累计（第 2 页从 21 起）—— 列表行标题右侧的
+    -- 「#N」徽章与网格封面左上角的名次徽章都吃这个字段。搜索 / 书库不打名次。
+    local is_rank = state.kind == "rank_recent" or state.kind == "rank_recommend"
+        or state.kind == "rank_top" or state.kind == "rank_category"
+        or state.kind == "rank_app" or state.kind == "rank_praise"
+    if is_rank then
+        local base, from
+        if append then
+            base = #books - added
+            from = base + 1
+        else
+            base = 0
+            from = 1
+        end
+        for i = from, #books do
+            local b = books[i]
+            if type(b) == "table" and type(b.rank_pos) ~= "number" then
+                b.rank_pos = base + (i - from + 1)
+            end
+        end
+    end
+
     if not append and #books == 0 then
         plugin:showInfo(_("没有找到书籍"))
         close_store_menu(plugin)
@@ -594,20 +619,19 @@ local function load_page(plugin, menu, page_index, append)
 end
 
 --- 现在该不该预取下一页。
---- 🔴 判据是「**到倒数第二页就预取**」，不是「滚到最后一页才预取」：
----    书库一页 18 条、菜单一屏 7 条 ⇒ 一屏一屏翻，真等到最后一页等于让用户白翻两次；
----    而最后一页常常只剩两三条 —— 用户很可能根本不翻到那儿（以为已经到底了）。
----    提前一页预取，翻页手感才是连续的。
+--- 🔴 判据是「**到倒数第三页就预取**」（v2.16.29 起 1→2 页提前量），不是「滚到最后一页才预取」：
+---    书库一批 30 条、菜单一屏 7 条 ⇒ 一次抓取能覆盖 4 屏；提前两屏预取，配合 Async
+---    后台跑，用户翻页**基本零等待**（参照 book.koplugin 的本地切片分页口径）。
 ---    两个判据取「或」：`page_num` 在 `onGotoPage`（带 no_recalculate_dimen=true）时
----    不会刷新，可能偏小；`last >= total - perpage` 只依赖 item_table 长度，用来兜底。
+---    不会刷新，可能偏小；`last >= total - 2*perpage` 只依赖 item_table 长度，用来兜底。
 local function should_prefetch(menu, page, last)
     local total = #(menu.item_table or {})
     if total == 0 then return false end
     local perpage = tonumber(menu.perpage) or 1
     if perpage < 1 then perpage = 1 end
     local page_num = math.max(1, math.ceil(total / perpage))
-    if page >= page_num - 1 then return true end
-    return last >= total - perpage
+    if page >= page_num - 2 then return true end
+    return last >= total - perpage * 2
 end
 
 local function on_store_page(plugin, menu, page, first, last)
@@ -732,12 +756,12 @@ end
 local switch_library_gender
 local show_library_categories
 
---- 🔴 前向声明（v2.16.0 控件行统一分派）：tab 行 / 筛选行 / 操作框三者的内容都
---- **按 `state.kind` 分派**（实现见文件后部的 menu_tabs / menu_filters / menu_actions）。
---- 这样「原地换榜单 / 换频道」时三个区域自动跟着 state 走，不会出现
+--- 🔴 前向声明（v2.16.0 控件行统一分派）：tab 行 / 筛选行 / 胶囊行 / 操作框四者的内容都
+--- **按 `state.kind` 分派**（实现见文件后部的 menu_tabs / menu_filters / menu_chips /
+--- menu_actions）。这样「原地换榜单 / 换频道」时各个区域自动跟着 state 走，不会出现
 --- 「tab 换了、筛选行还是上一屏的按钮」这种半新半旧的状态。
---- 定义在文件后部（要等各 kind 的 tabs/filters/actions 都定义完），此处先声明。
-local menu_tabs, menu_filters, menu_actions
+--- 定义在文件后部（要等各 kind 的 tabs/filters/chips/actions 都定义完），此处先声明。
+local menu_tabs, menu_filters, menu_actions, menu_chips
 
 --- 原地换了 kind / 频道 / 榜别之后，重建操作框条目。
 --- ⚠️ tab 行与筛选行**不用**手动刷新：它们是 `_store_tabs_fn` / `_store_filters_fn`，
@@ -781,54 +805,16 @@ local function patch_filters_and_reload(plugin, menu, patch)
     reload_from_head(plugin, menu)
 end
 
---- 书库筛选行（v2.16.0）：排序 / 状态 / 分类 三个「下拉」。
---- 改造前这三个藏在左上角操作框里 —— tab 栏管「去哪」（男频/女频/榜单/搜索），
---- 筛选却要「先想起来点左上角、再在 7 行按钮里找」，两套交互割裂
---- （用户原话「有的是界面上 tabs，有的是菜单选项里的筛选」）。
---- 现在筛选全部摆在 tab 栏**下面一排**，点开即选、按钮上直接显示当前值。
---- ⚠️ 每个 chip 的 `text` 是**当次求值的字符串**：`build_filter_row` 每次重绘都会
----    调本函数，所以值天然是活的（不需要写成函数 —— 那是操作框 `text` 的语义）。
+--- 书库筛选行（v2.16.29 减法）：排序 / 状态只有 3 个值 each，改成**常显胶囊行**
+--- （见 library_chips）—— 弹窗选一个三选一的值纯属浪费一层。筛选行只剩「分类 ▾」
+--- （150+ 条树，只能弹）。
+--- 历史口径：v2.16.0 把这三个从左上角操作框搬进筛选行；本轮再把两个小集合下探成胶囊。
+--- ⚠️ chip 的 `text` 是**当次求值的字符串**：`build_filter_row` 每次重绘都会
+---    调本函数，所以值天然是活的。
 local function library_filters(plugin, menu)
     local state = menu._store_state
     if not state then return nil end
     return {
-        {
-            text = T(_("排序：%1"), Store.sort_label(state.sort)) .. " ▾",
-            active = state.sort ~= Store.SORT.hot,
-            on_tap = function()
-                StoreView.show_chooser{
-                    title = _("排序方式"),
-                    entries = {
-                        { text = _("最热"), callback = function()
-                            patch_filters_and_reload(plugin, menu, { sort = Store.SORT.hot }) end },
-                        { text = _("最新"), callback = function()
-                            patch_filters_and_reload(plugin, menu, { sort = Store.SORT.new }) end },
-                        { text = _("字数"), callback = function()
-                            patch_filters_and_reload(plugin, menu, { sort = Store.SORT.words }) end },
-                    },
-                }
-            end,
-        },
-        {
-            text = T(_("状态：%1"), Store.creation_status_label(state.creation_status)) .. " ▾",
-            active = state.creation_status ~= Store.CREATION_STATUS.any,
-            on_tap = function()
-                StoreView.show_chooser{
-                    title = _("连载状态"),
-                    entries = {
-                        { text = _("不限"), callback = function()
-                            patch_filters_and_reload(plugin, menu,
-                                { creation_status = Store.CREATION_STATUS.any }) end },
-                        { text = _("连载中"), callback = function()
-                            patch_filters_and_reload(plugin, menu,
-                                { creation_status = Store.CREATION_STATUS.ongoing }) end },
-                        { text = _("已完结"), callback = function()
-                            patch_filters_and_reload(plugin, menu,
-                                { creation_status = Store.CREATION_STATUS.finished }) end },
-                    },
-                }
-            end,
-        },
         {
             text = T(_("分类：%1"), state.category_name or _("全部")) .. " ▾",
             active = (tonumber(state.category_id) or -1) ~= -1,
@@ -836,6 +822,49 @@ local function library_filters(plugin, menu)
             on_tap = function() show_library_categories(plugin, menu) end,
         },
     }
+end
+
+--- 书库胶囊行（v2.16.29）：排序（最热/最新/字数）+ 状态（不限/连载中/已完结）
+--- 常显在筛选行下一排，点一下 `patch_filters_and_reload` 原地刷新（值没变就不动）。
+--- 参照 book.koplugin 的 browse chips 与 miuread 的胶囊 tab：短值集合直接摆在
+--- 界面上比收在弹窗里「现代」得多，也少一次全屏刷新。
+local function library_chips(plugin, menu)
+    local state = menu._store_state
+    if not state then return nil end
+    local chips = {}
+    local sorts = {
+        { Store.SORT.hot, _("最热") },
+        { Store.SORT.new, _("最新") },
+        { Store.SORT.words, _("字数") },
+    }
+    for _i, s in ipairs(sorts) do
+        chips[#chips + 1] = {
+            text = s[2],
+            active = state.sort == s[1],
+            on_tap = function()
+                if state.sort ~= s[1] then
+                    patch_filters_and_reload(plugin, menu, { sort = s[1] })
+                end
+            end,
+        }
+    end
+    local statuses = {
+        { Store.CREATION_STATUS.any, _("不限") },
+        { Store.CREATION_STATUS.ongoing, _("连载中") },
+        { Store.CREATION_STATUS.finished, _("已完结") },
+    }
+    for _i, s in ipairs(statuses) do
+        chips[#chips + 1] = {
+            text = s[2],
+            active = state.creation_status == s[1],
+            on_tap = function()
+                if state.creation_status ~= s[1] then
+                    patch_filters_and_reload(plugin, menu, { creation_status = s[1] })
+                end
+            end,
+        }
+    end
+    return { chips = chips }
 end
 
 local function library_actions(plugin, menu)
@@ -850,7 +879,9 @@ end
 
 --- 分类树取一次缓存一次（男频/女频各一棵，见 open_categories 的缓存注释）。
 --- cb(list) 在树就绪时调用 —— 有缓存就**同步**调，没缓存才走子进程。
-local function ensure_categories(plugin, gender, cb)
+--- ⚠️ `quiet`（v2.16.29）：后台预热（warm_categories）用 —— 拉取失败只写日志不弹
+---    错误提示，胶囊行少几个分类不该在开菜单时吵用户。
+local function ensure_categories(plugin, gender, cb, quiet)
     local cached = plugin._store_categories
     if cached and plugin._store_categories_gender == gender then
         cb(cached)
@@ -863,7 +894,13 @@ local function ensure_categories(plugin, gender, cb)
     end, function(ok, res, err)
         if not ok or type(res) ~= "table" or not res.list then
             local e2 = (type(res) == "table" and res.err) or err
-            plugin:showError(T(_("获取分类失败：%1"), err_text(e2)))
+            if quiet then
+                if Log then
+                    Log.debug("[FanQie][store] 分类树预热失败:", err_text(e2))
+                end
+            else
+                plugin:showError(T(_("获取分类失败：%1"), err_text(e2)))
+            end
             return
         end
         plugin._store_categories = res.list
@@ -872,6 +909,20 @@ local function ensure_categories(plugin, gender, cb)
         plugin._store_categories_gender = gender
         cb(res.list)
     end, { poll_interval = 0.3, timeout = 30, tag = ASYNC_TAG })
+end
+
+--- 后台预热分类树，就绪后**静默**重绘菜单（v2.16.29：原创榜胶囊行补上分类 chips）。
+--- 🔴 胶囊行是 `updateItems` 时同步求值的，而分类树是异步缓存 —— 菜单刚打开时
+---    缓存往往还没好，胶囊行只有「性别 + 全部 + 更多」；树一到就得补一次重绘，
+---    否则分类胶囊要等下次重绘才出现（用户会以为没这个功能）。
+local function warm_categories(plugin, gender, menu)
+    ensure_categories(plugin, gender, function()
+        if not menu or menu._miu_closed then return end
+        if not menu.updateItems then return end
+        menu._suppress_page_callback = true
+        pcall(menu.updateItems, menu)
+        menu._suppress_page_callback = false
+    end, true)
 end
 
 --- 分类树选择器的**树状折叠**条目构造（v2.16.25）。
@@ -1043,8 +1094,10 @@ local function open_library(plugin, gender, category, group_label)
         -- v2.16.0：tabs / 筛选行 / 操作框三者都走**按 state.kind 分派**的统一入口
         -- （见 menu_tabs / menu_filters / menu_actions）—— 原地换频道、换榜单后
         -- 三块内容自动跟着 state 走，不会半新半旧。
+        -- v2.16.29 加第四块：内容胶囊行（menu_chips，同样按 kind 分派）。
         tabs_fn = function(m) return menu_tabs(plugin, m) end,
         filters_fn = function(m) return menu_filters(plugin, m) end,
+        chips_fn = function(m) return menu_chips(plugin, m) end,
     })
     menu._store_state = state
     menu._store_actions = library_actions(plugin, menu)
@@ -1126,6 +1179,8 @@ local function apply_rank_category(plugin, menu, gender, mold, category)
     menu._store_subtitle = label
     -- 从「其它榜」原地切进原创榜时 kind 会变 ⇒ 操作框条目要重算
     refresh_menu_actions(plugin, menu)
+    -- 换性别后分类树可能是另一棵（男/女频各一棵）：预热 + 就绪后重绘胶囊行
+    warm_categories(plugin, gender, menu)
     reload_from_head(plugin, menu)
 end
 
@@ -1149,36 +1204,80 @@ local function rank_filters(plugin, menu)
     }
 end
 
---- 原创榜筛选行：性别 / 分类（榜别在 tab 行，再给一个「榜单」跳去别的榜）。
+--- 原创榜筛选行（v2.16.29 减法）：性别与分类下探成**常显胶囊行**
+--- （见 rank_category_chips）—— 换个性别/选个主分类不该进两层弹窗。
+--- 筛选行只剩「榜单 ▾」（跳去别的榜，原地换）。
 local function rank_category_filters(plugin, menu)
     local st = menu._store_state or {}
-    local cname = st.category_name
-    if type(cname) ~= "string" or cname == "" then cname = _("全部") end
     return {
-        {
-            text = T(_("性别：%1"), Store.gender_label(st.gender)) .. " ▾",
-            on_tap = function()
-                StoreView.show_chooser{
-                    title = _("频道"),
-                    entries = {
-                        { text = Store.gender_label(Store.GENDER.male), callback = function()
-                            -- 换性别后分类未必存在 ⇒ 回落「全部」
-                            apply_rank_category(plugin, menu, Store.GENDER.male, st.rank_mold, nil) end },
-                        { text = Store.gender_label(Store.GENDER.female), callback = function()
-                            apply_rank_category(plugin, menu, Store.GENDER.female, st.rank_mold, nil) end },
-                    },
-                }
-            end,
-        },
-        {
-            text = T(_("分类：%1"), cname) .. " ▾",
-            active = (st.category_id ~= nil and st.category_id ~= ""),
-            -- 传 menu ⇒ 原地换分类（不重开菜单）
-            on_tap = function() open_rank_categories(plugin, st.gender, st.rank_mold, menu) end,
-        },
         {
             text = T(_("榜单：%1"), Store.rank_mold_label(st.rank_mold)) .. " ▾",
             on_tap = function() plugin:showStoreRanks(menu) end,
+        },
+    }
+end
+
+--- 原创榜胶囊行（v2.16.29）：性别（男频/女频）+ 全部 + 主分类常显，点一下
+--- `apply_rank_category` 原地换，不再进「性别 ▾ / 分类 ▾」两层弹窗。
+--- 放不下的分类收进「更多 ▾」—— 里面仍是 v2.16.26 的树状选择器
+--- （主分类换榜、二级分类跳书库），两层入口并存：常用的直接点、全量进树。
+--- 🔴 分类树是异步缓存（ensure_categories）：没缓存时胶囊行只有「性别 + 全部 + 更多」，
+---    树就绪后由 warm_categories 触发一次重绘补上。
+local function rank_category_chips(plugin, menu)
+    local st = menu._store_state
+    if not st then return nil end
+    local chips = {}
+    for _i, g in ipairs({ Store.GENDER.male, Store.GENDER.female }) do
+        chips[#chips + 1] = {
+            text = Store.gender_label(g),
+            active = st.gender == g,
+            on_tap = function()
+                if st.gender == g then return end
+                -- 换性别回落「全部」：男/女频的分类树是两棵，带着旧 id 查过去
+                -- 要么错分类要么空表（同 switch_library_gender 的理由）
+                apply_rank_category(plugin, menu, g, st.rank_mold, nil)
+            end,
+        }
+    end
+    -- 主分类（仅缓存命中时；没命中就等 warm_categories 重绘）
+    local list = (type(plugin._store_categories) == "table"
+        and plugin._store_categories_gender == st.gender) and plugin._store_categories or nil
+    if list then
+        local mains = {}
+        local groups = Store.group_categories(list)
+        for _i, g in ipairs(groups) do
+            if g.label == "主分类" then
+                mains = g.items or {}
+                break
+            end
+        end
+        if #mains == 0 then
+            -- 兜底：树没分组头时直接用平铺列表（category_tree_entries 同款口径）
+            mains = list
+        end
+        chips[#chips + 1] = {
+            text = _("全部"),
+            active = st.category_id == nil or st.category_id == "",
+            on_tap = function()
+                if st.category_id == nil or st.category_id == "" then return end
+                apply_rank_category(plugin, menu, st.gender, st.rank_mold, nil)
+            end,
+        }
+        for _i, c in ipairs(mains) do
+            chips[#chips + 1] = {
+                text = c.name,
+                active = tonumber(st.category_id) == tonumber(c.category_id),
+                on_tap = function()
+                    apply_rank_category(plugin, menu, st.gender, st.rank_mold, c)
+                end,
+            }
+        end
+    end
+    return {
+        chips = chips,
+        overflow = {
+            text = _("更多") .. " ▾",
+            on_tap = function() open_rank_categories(plugin, st.gender, st.rank_mold, menu) end,
         },
     }
 end
@@ -1252,6 +1351,7 @@ local function open_rank(plugin, kind, label, menu)
         store_actions_title = _("榜单操作"),
         tabs_fn = function(x) return menu_tabs(plugin, x) end,
         filters_fn = function(x) return menu_filters(plugin, x) end,
+        chips_fn = function(x) return menu_chips(plugin, x) end,
     })
     m._store_state = state
     m._store_actions = rank_actions(plugin, m)
@@ -1301,6 +1401,7 @@ local function open_rank_app(plugin, kind, rank_key, label, menu)
         -- App 榜**没有 tab 行**（25 个榜放不下）：筛选行的「榜单：xx ▾」就是它的切换入口，
         -- 所以「换榜单」不再挂在操作框里。
         filters_fn = function(x) return menu_filters(plugin, x) end,
+        chips_fn = function(x) return menu_chips(plugin, x) end,
     })
     m._store_state = state
     m._store_actions = app_rank_actions(plugin, m)
@@ -1338,9 +1439,12 @@ open_rank_category = function(plugin, gender, mold, category, menu)
         store_actions_title = _("榜单操作"),
         tabs_fn = function(x) return menu_tabs(plugin, x) end,
         filters_fn = function(x) return menu_filters(plugin, x) end,
+        chips_fn = function(x) return menu_chips(plugin, x) end,
     })
     m._store_state = state
     m._store_actions = rank_category_actions(plugin, m)
+    -- 预热分类树：胶囊行的分类 chips 要等缓存就绪后补一次重绘（warm_categories）
+    warm_categories(plugin, gender, m)
     load_page(plugin, m, 0, false)
     return m
 end
@@ -1387,6 +1491,7 @@ local function open_search(plugin, keyword)
         -- 省下来的高度全给列表。
         tabs_fn = function(m) return menu_tabs(plugin, m) end,
         filters_fn = function(m) return menu_filters(plugin, m) end,
+        chips_fn = function(m) return menu_chips(plugin, m) end,
     })
     menu._store_state = state
     menu._store_actions = search_actions(plugin, menu)
@@ -1410,17 +1515,21 @@ end
 
 -- ------------------------------------------------------------------ 控件行分派
 --
--- v2.16.0：书城所有列表菜单共用同一套「三块区域」模型 ——
+-- v2.16.0：书城所有列表菜单共用同一套「区域」模型 ——
 --
 --   ┌ tab 行 ────── 一级导航：去哪（男频/女频/榜单/搜索 · 阅读榜/新书榜 · …）
---   ├ 筛选行 ────── 这一屏显示什么：排序/状态/分类 · 性别/分类 · 榜单
+--   ├ 筛选行 ────── 这一屏显示什么：分类 · 榜单（点了会**弹选择器**的下拉入口）
+--   ├ 胶囊行 ────── 短值集合常显（v2.16.29）：排序/状态 · 性别/主分类
+--   │              （点一下**直接切换**，不弹任何东西）
 --   ├ 列表
 --   └ 操作框 ────── 动作：显示方式 / 加载更多 / 重新加载 / 搜索
 --
--- 三块内容**全部按 `state.kind` 现算**（tab 与筛选行每次重绘求值，操作框在 kind
--- 变化时由 refresh_menu_actions 重建）。好处：原地换榜单/换频道时三块自动跟着 state
+-- 四块内容**全部按 `state.kind` 现算**（tab/筛选/胶囊行每次重绘求值，操作框在 kind
+-- 变化时由 refresh_menu_actions 重建）。好处：原地换榜单/换频道时各块自动跟着 state
 -- 走，不会出现「tab 换了、筛选行还是上一屏的按钮」这种半新半旧的状态。
--- 改造前的形态是「导航在 tab、筛选藏在操作框」两套交互 —— 用户反馈「有点割裂」。
+-- 改造前的形态是「导航在 tab、筛选藏在操作框」两套交互 —— 用户反馈「有点割裂」；
+-- v2.16.29 参照 book.koplugin 的 browse chips 与 miuread 的胶囊 tab，把三选一这类
+-- 短值集合进一步从弹窗下探成常显胶囊。
 
 menu_tabs = function(plugin, menu)
     local st = menu._store_state or {}
@@ -1442,6 +1551,15 @@ menu_filters = function(plugin, menu)
         return rank_filters(plugin, menu)
     end
     -- search：没有筛选行
+    return nil
+end
+
+--- 内容胶囊行分派（v2.16.29）：短值集合（排序/状态、性别/主分类）常显在筛选行下，
+--- 点一下原地切换；没有合适集合的 kind（搜索 / 网页榜 / App 榜）返回 nil 不画。
+menu_chips = function(plugin, menu)
+    local st = menu._store_state or {}
+    if st.kind == "library" then return library_chips(plugin, menu) end
+    if st.kind == "rank_category" then return rank_category_chips(plugin, menu) end
     return nil
 end
 

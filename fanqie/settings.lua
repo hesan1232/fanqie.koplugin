@@ -601,11 +601,13 @@ function Settings:set_ui_view(kind, mode)
     self:flush()
 end
 
+--- 网格列数。0 = 按屏宽自适应（v2.16.29；与 rows 的 0=自动同口径）。
 function Settings:get_ui_grid_cols()
     local ui = self:get("ui")
     local n = type(ui) == "table" and tonumber(ui.grid_cols) or nil
     if not n then return GRID_COLS_DEFAULT end
     n = math.floor(n)
+    if n <= 0 then return 0 end
     if n < GRID_COLS_MIN then n = GRID_COLS_MIN end
     if n > GRID_COLS_MAX then n = GRID_COLS_MAX end
     return n
@@ -613,8 +615,13 @@ end
 
 function Settings:set_ui_grid_cols(n)
     n = math.floor(tonumber(n) or GRID_COLS_DEFAULT)
-    if n < GRID_COLS_MIN then n = GRID_COLS_MIN end
-    if n > GRID_COLS_MAX then n = GRID_COLS_MAX end
+    if n <= 0 then
+        n = 0
+    elseif n < GRID_COLS_MIN then
+        n = GRID_COLS_MIN
+    elseif n > GRID_COLS_MAX then
+        n = GRID_COLS_MAX
+    end
     local ui = self:get("ui")
     if type(ui) ~= "table" then ui = {} end
     ui.grid_cols = n

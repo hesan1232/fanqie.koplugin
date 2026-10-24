@@ -61,7 +61,7 @@ local CoverCell = {}
 -- 🔴 构建标记：随每次改动本文件手动更新。「关于」里会显示它 —— 用户报告
 -- 「改了没生效」时，先看这个标记对不对：标记是旧的 ⇒ 设备上这份文件**没换上**，
 -- 是解压/覆盖环节的问题，别去改代码。
-CoverCell.BUILD = "20261021a"
+CoverCell.BUILD = "20261025a"
 
 -- 封面宽高比 2:3（与番茄封面一致，也与 book.koplugin 的 `cw * 3 / 2` 同口径）
 local COVER_RATIO = 1.5
@@ -71,6 +71,9 @@ CoverCell.GRID_COLS_MIN, CoverCell.GRID_COLS_MAX = 2, 8
 CoverCell.GRID_ROWS_MIN, CoverCell.GRID_ROWS_MAX = 1, 8
 --- `rows == AUTO_ROWS` ⇒ 行数按屏高自动反推（老配置兜底，新档位不用它）。
 CoverCell.AUTO_ROWS = 0
+--- `cols == AUTO_COLS` ⇒ 列数按屏宽自适应（v2.16.29，参照 book.koplugin 的
+--- denseCoverMetrics：目标列宽反推列数 + 最小列宽下限逐列回退）。
+CoverCell.AUTO_COLS = 0
 
 --- 「显示方式」里的预设档位（列, 行）。
 CoverCell.GRID_PRESETS = { { 3, 3 }, { 3, 4 }, { 4, 3 }, { 4, 4 } }
@@ -95,28 +98,32 @@ local function clamp_int(v, lo, hi)
 end
 
 --- 夹紧一组 (cols, rows)。
---- ⚠️ 三档语义必须分清，混了就出「莫名空页」：
----   * `rows == nil` / 认不出来的值 → **默认档 4**（跟 settings 的默认值同口径）；
----   * `rows <= 0`（含显式的 0）→ `AUTO_ROWS`，交给 `metrics` 按屏高反推（老配置兜底）；
----   * 其余 → 夹到 `[GRID_ROWS_MIN, GRID_ROWS_MAX]`。
+--- ⚠️ 四档语义必须分清，混了就出「莫名空页」：
+---   * `cols == nil` → **默认档 3**（跟 settings 的默认值同口径）；
+---   * `cols <= 0`（含显式的 0）→ `AUTO_COLS`，交给 `metrics` 按屏宽自适应；
+---   * `rows == nil` → **默认档 4**（跟 settings 的默认值同口径）；
+---   * `rows <= 0`（含显式的 0）→ `AUTO_ROWS`，交给 `metrics` 按屏高反推（老配置兜底）。
 --- 「缺省」与「显式要自动」是两件事：混成同一个的话，`resolve_view({})`（没有 settings）
 --- 会拿到「自动」，而用户在设置里看到的默认又是 4 行 —— 两边对不上。
----@return number cols
+---@return number cols 0 = 自适应
 ---@return number rows 0 = 自动
 function CoverCell.normalize_layout(cols, rows)
-    cols = clamp_int(cols ~= nil and cols or CoverCell.DEFAULT_COLS,
-        CoverCell.GRID_COLS_MIN, CoverCell.GRID_COLS_MAX)
-    if rows == nil then
-        rows = CoverCell.DEFAULT_ROWS
+    local c = tonumber(cols)
+    local cols_out
+    if c == nil then
+        cols_out = CoverCell.DEFAULT_COLS
+    elseif c <= 0 then
+        cols_out = CoverCell.AUTO_COLS
     else
-        rows = math.floor(tonumber(rows) or CoverCell.DEFAULT_ROWS)
-        if rows <= 0 then
-            rows = CoverCell.AUTO_ROWS
-        else
-            rows = clamp_int(rows, CoverCell.GRID_ROWS_MIN, CoverCell.GRID_ROWS_MAX)
-        end
+        cols_out = clamp_int(c, CoverCell.GRID_COLS_MIN, CoverCell.GRID_COLS_MAX)
     end
-    return cols, rows
+    rows = math.floor(tonumber(rows) or CoverCell.DEFAULT_ROWS)
+    if rows <= 0 then
+        rows = CoverCell.AUTO_ROWS
+    else
+        rows = clamp_int(rows, CoverCell.GRID_ROWS_MIN, CoverCell.GRID_ROWS_MAX)
+    end
+    return cols_out, rows
 end
 
 -- 🔴 不能把多字节分隔符（`×` `、` 全角空格）直接写进 Lua 的字符集 `[...]`：
@@ -166,11 +173,16 @@ function CoverCell.parse_layout(text)
     return math.floor(cols), math.floor(rows)
 end
 
---- 档位文案：「3×4」/「3 列 · 行数自动」。
+--- 档位文案：「3×4」/「3 列 · 行数自动」/「列数自适应 · 4 行」。
 --- ⚠️ T 必须是 `ffi/util.template` 的 `%1` 口径（不是 string.format）。
 function CoverCell.layout_label(cols, rows)
-    cols = math.floor(tonumber(cols) or CoverCell.DEFAULT_COLS)
     rows = math.floor(tonumber(rows) or 0)
+    if math.floor(tonumber(cols) or 0) <= 0 then
+        -- v2.16.29 自适应列档
+        if rows <= 0 then return _("列数自适应") end
+        return T(_("%1 行 · 列数自适应"), tostring(rows))
+    end
+    cols = math.floor(tonumber(cols) or CoverCell.DEFAULT_COLS)
     if rows <= 0 then
         return T(_("%1 列 · 行数自动"), tostring(cols))
     end
@@ -197,17 +209,26 @@ function CoverCell.layout_options(mode, cols, rows)
         }
     end
     -- 当前档位不在预设里（老配置 / 自定义填过）⇒ 单列一项回显，否则用户看不出自己在哪档
+    -- ⚠️ 自适应列档（cols<=0）由下面的专属选项负责，不走这条回显（否则同一档出现两次）
     local in_presets = false
     for _i, preset in ipairs(CoverCell.GRID_PRESETS) do
         if preset[1] == cols and preset[2] == rows then in_presets = true break end
     end
-    if mode == "grid" and not in_presets then
+    if mode == "grid" and cols > 0 and not in_presets then
         opts[#opts + 1] = {
             label = T(_("封面网格 %1（当前）"), CoverCell.layout_label(cols, rows)),
             current = true,
             mode = "grid", cols = cols, rows = rows,
         }
     end
+    -- v2.16.29：列数按屏宽自适应（书城 / 书架共用这一个档）
+    opts[#opts + 1] = {
+        label = _("封面网格 · 列数自适应"),
+        current = mode == "grid" and cols <= 0,
+        mode = "grid",
+        cols = CoverCell.AUTO_COLS,
+        rows = rows > 0 and rows or CoverCell.DEFAULT_ROWS,
+    }
     opts[#opts + 1] = {
         label = _("自定义列×行…"),
         current = false, custom = true,
@@ -261,20 +282,47 @@ end
 ---@return table metrics
 function CoverCell.metrics(avail_w, avail_h, cols, opts)
     opts = opts or {}
-    cols = clamp_int(cols ~= nil and cols or CoverCell.DEFAULT_COLS,
-        CoverCell.GRID_COLS_MIN, CoverCell.GRID_COLS_MAX)
     avail_w = math.max(1, math.floor(tonumber(avail_w) or 1))
     avail_h = math.max(1, math.floor(tonumber(avail_h) or 1))
     local gap = opts.gap or CoverCell.gap()
     local row_gap = opts.row_gap or CoverCell.rowGap()
     local title_extra = opts.title_extra or CoverCell.titleExtra()
 
-    local slot_w = math.max(1, math.floor((avail_w - gap * (cols - 1)) / cols))
-
     local want_rows = math.floor(tonumber(opts.rows) or 0)
     if want_rows < CoverCell.GRID_ROWS_MIN or want_rows > CoverCell.GRID_ROWS_MAX then
         want_rows = nil
     end
+
+    -- ── 列数解析（v2.16.29：cols <= 0 = 按屏宽自适应）────────────────────
+    -- 参照 book.koplugin 的 denseCoverMetrics：按「目标列宽」反推列数，
+    -- 再保证每格不窄于「最小列宽」，不满足就逐列回退。
+    local cols_in = math.floor(tonumber(cols) or CoverCell.DEFAULT_COLS)
+    local auto_cols = cols_in <= 0
+    local cols_eff
+    if auto_cols then
+        local target_cw = S.sz(110)   -- 理想列宽：一块封面不缩太小、也不铺太满
+        local min_cw = S.sz(72)       -- 下限：比这还窄的封面标题就没法看了
+        if want_rows then
+            -- 显式行数先定封面高 ⇒ 封面宽 = 高 / 1.5；列数取「恰好放下这个宽度」的档，
+            -- 槽宽多出来的部分由格内居中消化（与显式列数的留白行为一致）
+            local cell_h0 = math.max(title_extra + S.sz(24),
+                math.floor((avail_h - row_gap * (want_rows - 1)) / want_rows))
+            local cw0 = math.max(1, math.floor((cell_h0 - title_extra) / COVER_RATIO))
+            cols_eff = clamp_int(math.floor((avail_w + gap) / (cw0 + gap)),
+                CoverCell.GRID_COLS_MIN, CoverCell.GRID_COLS_MAX)
+        else
+            cols_eff = clamp_int(math.floor((avail_w + gap) / (target_cw + gap) + 0.5),
+                CoverCell.GRID_COLS_MIN, CoverCell.GRID_COLS_MAX)
+        end
+        local function slot_of(c) return math.floor((avail_w - gap * (c - 1)) / c) end
+        while cols_eff > CoverCell.GRID_COLS_MIN and slot_of(cols_eff) < min_cw do
+            cols_eff = cols_eff - 1
+        end
+    else
+        cols_eff = clamp_int(cols_in, CoverCell.GRID_COLS_MIN, CoverCell.GRID_COLS_MAX)
+    end
+
+    local slot_w = math.max(1, math.floor((avail_w - gap * (cols_eff - 1)) / cols_eff))
 
     local cw, ch, cell_h, rows
     if want_rows then
@@ -305,8 +353,9 @@ function CoverCell.metrics(avail_w, avail_h, cols, opts)
     end
 
     return {
-        cols = cols,
+        cols = cols_eff,
         rows = rows,
+        auto_cols = auto_cols,
         auto_rows = not want_rows,
         gap = gap,
         row_gap = row_gap,
@@ -316,7 +365,7 @@ function CoverCell.metrics(avail_w, avail_h, cols, opts)
         ch = ch,
         cell_h = cell_h,
         grid_h = rows * cell_h + (rows - 1) * row_gap,
-        perpage = cols * rows,
+        perpage = cols_eff * rows,
     }
 end
 
@@ -376,6 +425,39 @@ function CoverCellWidget:init()
                      " offset=", tostring(bx), ",", tostring(by),
                      " cover=", tostring(m.cw), "x", tostring(m.ch),
                      " build=", CoverCell.BUILD)
+        end
+    end
+
+    -- 名次徽章（v2.16.29）：榜单网格的「第 N 名」，叠在封面**左上角**（状态徽章
+    -- 在右上，互不打架）。前三名用反色底（黑底白字）—— 榜单就该一眼看出头部；
+    -- 其余名次用普通描边徽章。字段口径与列表行的「#N」一致（entry.rank，见
+    -- store_view.build_items / store_ui 的榜单名次编号）。
+    if type(entry.rank) == "string" and entry.rank ~= "" then
+        local no = tonumber(entry.rank)
+        local badge
+        if no and no >= 1 and no <= 3 then
+            badge = S.badge_ink("#" .. entry.rank, 12)
+        else
+            badge = S.badge("#" .. entry.rank, 12)
+        end
+        local ok_s, bs = pcall(badge.getSize, badge)
+        local inset = S.sz(3)
+        local bx = inset
+        local by = inset
+        if ok_s and type(bs) == "table" and tonumber(bs.h) then
+            if by + bs.h > m.ch then by = math.max(0, m.ch - bs.h) end
+        end
+        badge.overlap_offset = { bx, by }
+        if cover_stack ~= clipped_cover then
+            -- 已有右上角状态徽章：往同一个 OverlapGroup 里追加（后画者在上）
+            table.insert(cover_stack, badge)
+        else
+            cover_stack = OverlapGroup:new{
+                dimen = Geom:new{ w = m.cw, h = m.ch },
+                allow_mirroring = false,
+                clipped_cover,
+                badge,
+            }
         end
     end
 

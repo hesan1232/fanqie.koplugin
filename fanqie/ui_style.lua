@@ -238,4 +238,30 @@ function S.badge(text, font_size)
     }
 end
 
+--- 反色小徽章（v2.16.29，榜单前三名次）：黑底白字。
+--- 只用在「需要从一排描边徽章里跳出来」的极小元素上 —— 大面积填充在墨水屏上
+--- 会显得很重，这个口径与 `S.badge` 是一对（普通/强调）。
+function S.badge_ink(text, font_size)
+    local TextWidget = require("ui/widget/textwidget")
+    local label = TextWidget:new{
+        text = tostring(text or ""),
+        face = S.face("xx_smallinfofont", font_size or 12),
+        fgcolor = S.paper,
+        padding = 0,
+    }
+    local h = label:getSize().h
+    return FrameContainer:new{
+        bordersize = 0,
+        radius = S.pillRadius(h + S.sz(4)),
+        background = S.ink,
+        padding = 0,
+        padding_left = S.sz(6),
+        padding_right = S.sz(6),
+        padding_top = S.sz(2),
+        padding_bottom = S.sz(2),
+        margin = 0,
+        label,
+    }
+end
+
 return S

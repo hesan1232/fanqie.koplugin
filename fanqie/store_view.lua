@@ -511,8 +511,27 @@ function StoreView.build_filter_row(menu)
     local pad = S.sz(8)
     local gap = S.sz(6)
     -- 等宽分配：小屏上按内容自适应会溢出屏幕（分类名可能很长），等宽 + 省略号最稳。
-    local chip_w = math.floor((screen_width() - pad * 2 - gap * (n - 1)) / n)
-    chip_w = math.max(S.sz(48), chip_w)
+    -- ⚠️ 例外：只剩 1 个 chip 时等宽 = 整条通栏大按钮，观感很笨（v2.16.29 起筛选行
+    --    普遍只剩「分类 ▾ / 榜单 ▾」一个入口）⇒ 改按内容量宽，量不到再退回等宽。
+    local chip_w
+    if n == 1 then
+        local probe = Button:new{
+            text = tostring(chips[1].text or ""),
+            text_font_face = "smallinfofont",
+            text_font_size = S.fontSize(12),
+            bordersize = S.sz(1),
+            padding_h = S.sz(3),
+            padding_v = S.sz(3),
+        }
+        local ok_s, size = pcall(probe.getSize, probe)
+        if probe.free then pcall(probe.free, probe) end
+        chip_w = (ok_s and type(size) == "table" and tonumber(size.w)) or S.sz(200)
+        chip_w = math.min(math.max(S.sz(48), math.floor(chip_w) + S.sz(2)),
+            screen_width() - pad * 2)
+    else
+        chip_w = math.floor((screen_width() - pad * 2 - gap * (n - 1)) / n)
+        chip_w = math.max(S.sz(48), chip_w)
+    end
 
     local row = HorizontalGroup:new{ align = "center" }
     row[#row + 1] = HorizontalSpan:new{ width = pad }
@@ -534,6 +553,116 @@ function StoreView.build_filter_row(menu)
                 UIManager:nextTick(chip.on_tap)
             end or nil,
         }
+    end
+    row[#row + 1] = HorizontalSpan:new{ width = pad }
+    return row
+end
+
+--- 内容胶囊行（v2.16.29）：与筛选行的区别——筛选行是「点开弹选择器」的下拉入口，
+--- 胶囊行是**一组可选值常显在界面上**，点一下原地切换、不进任何弹窗。
+--- 参照 book.koplugin 书城浏览页的 browse chips：常显胶囊 + 「更多 ▾」折叠。
+---
+--- `menu._store_chips_fn(menu)` 返回：
+---   { chips = { { text=, active=, on_tap= }, … },
+---     overflow = { text=, on_tap= }   ← 放不下时行尾的「更多 ▾」（缺省不画） }
+--- 每次 updateItems 重新求值 ⇒ active 高亮跟随当前 state。
+---
+--- 🔴 贪心装箱：先逐个构造 Button 量宽（不给 width 时 `getSize` 走内容实测），
+---    按屏幕宽度装到装不下为止，剩余的收进 overflow —— **绝不让一行胶囊溢出屏幕**。
+---    桩环境量不到宽度时按保守值兜底，行为仍然确定（回归断言可依赖）。
+function StoreView.build_chip_row(menu)
+    local fn = menu._store_chips_fn
+    if type(fn) ~= "function" then return nil end
+    local ok_c, spec = pcall(fn, menu)
+    if not ok_c or type(spec) ~= "table" then return nil end
+    local chips = spec.chips
+    if type(chips) ~= "table" or #chips == 0 then return nil end
+
+    local pad = S.sz(8)
+    local gap = S.sz(6)
+    local max_w = screen_width() - pad * 2
+
+    local function make_btn(chip)
+        return Button:new{
+            text = tostring(chip.text or ""),
+            text_font_face = "smallinfofont",
+            text_font_size = S.fontSize(12),
+            text_font_bold = chip.active and true or false,
+            bordersize = S.sz(1),
+            radius = S.radius(),
+            padding_h = S.sz(5),
+            padding_v = S.sz(3),
+            show_parent = menu,
+            callback = chip.on_tap and function()
+                -- 同 tab / 筛选：重建控件树的回调不能发生在手势分发内
+                UIManager:nextTick(chip.on_tap)
+            end or nil,
+        }
+    end
+
+    local btns = {}
+    for i, chip in ipairs(chips) do
+        btns[i] = make_btn(chip)
+    end
+    local widths = {}
+    for i, b in ipairs(btns) do
+        local ok_s, size = pcall(b.getSize, b)
+        widths[i] = (ok_s and type(size) == "table" and tonumber(size.w)) or S.sz(64)
+    end
+
+    -- overflow 按钮只在「整行装不下」时才参与排版
+    local overflow_btn = nil
+    local overflow_w = 0
+    if type(spec.overflow) == "table" then
+        overflow_btn = make_btn{
+            text = spec.overflow.text or _("更多") .. " ▾",
+            on_tap = spec.overflow.on_tap,
+        }
+        local ok_s, size = pcall(overflow_btn.getSize, overflow_btn)
+        overflow_w = (ok_s and type(size) == "table" and tonumber(size.w)) or S.sz(72)
+    end
+
+    local all_w = 0
+    for i, w in ipairs(widths) do
+        all_w = all_w + w + (i > 1 and gap or 0)
+    end
+    local show_overflow = overflow_btn ~= nil
+        and (all_w + gap + overflow_w > max_w or #chips > #widths)
+    local used = 0
+    local count = 0
+    for i = 1, #widths do
+        local w = widths[i] + (count > 0 and gap or 0)
+        local reserve = show_overflow and (gap + overflow_w) or 0
+        if used + w + reserve <= max_w then
+            used = used + w
+            count = i
+        else
+            break
+        end
+    end
+    if count == 0 and #widths > 0 then
+        -- 连一颗都装不下（超窄屏）：至少亮出第一颗，别给用户一行空白
+        count = 1
+    end
+
+    -- 装不下的按钮当场释放：Button 里有文字控件，白留着就是漏显存
+    for i = count + 1, #btns do
+        if btns[i] and btns[i].free then pcall(btns[i].free, btns[i]) end
+    end
+    if overflow_btn and not show_overflow then
+        if overflow_btn.free then pcall(overflow_btn.free, overflow_btn) end
+        overflow_btn = nil
+    end
+
+    local row = HorizontalGroup:new{ align = "center" }
+    row[#row + 1] = HorizontalSpan:new{ width = pad }
+    for i = 1, count do
+        if i > 1 then row[#row + 1] = HorizontalSpan:new{ width = gap } end
+        row[#row + 1] = btns[i]
+    end
+    if overflow_btn then
+        row[#row + 1] = HorizontalSpan:new{ width = gap }
+        row[#row + 1] = overflow_btn
     end
     row[#row + 1] = HorizontalSpan:new{ width = pad }
     return row
@@ -586,6 +715,20 @@ function StoreView.attach_filter_row(menu, row)
     local at = menu._store_tab_row and 2 or 1
     table.insert(menu.item_group, at, row)
     menu._store_filter_row = row
+    if menu.item_group.resetLayout then menu.item_group:resetLayout() end
+    return row_height(row)
+end
+
+--- 把胶囊行插在筛选行**之后**（依次补齐缺的行位）。
+--- 必须最后调用（顺序 = tab → 筛选 → 胶囊）。
+function StoreView.attach_chip_row(menu, row)
+    detach_control_row(menu, "_store_chip_row")
+    if not row then return 0 end
+    local at = 1
+    if menu._store_tab_row then at = at + 1 end
+    if menu._store_filter_row then at = at + 1 end
+    table.insert(menu.item_group, at, row)
+    menu._store_chip_row = row
     if menu.item_group.resetLayout then menu.item_group:resetLayout() end
     return row_height(row)
 end
@@ -658,6 +801,7 @@ function StoreMenu:updateItems(select_number, no_recalculate_dimen)
     --    Button 再来一次 free（double free，墨水屏上直接花屏/闪退）。
     self._store_tab_row = nil
     self._store_filter_row = nil
+    self._store_chip_row = nil
     self.item_group:clear()
     self.page_info:resetLayout()
     self.return_button:resetLayout()
@@ -679,13 +823,16 @@ function StoreMenu:updateItems(select_number, no_recalculate_dimen)
     local tab_h = StoreView.attach_tab_row(self, tab_row)
     local filter_row = StoreView.build_filter_row(self)
     local filter_h = StoreView.attach_filter_row(self, filter_row)
+    -- 内容胶囊行（v2.16.29）：筛选行下面、列表上面。没有 chips_fn 的菜单（搜索等）不画。
+    local chip_row = StoreView.build_chip_row(self)
+    local chip_h = StoreView.attach_chip_row(self, chip_row)
 
     -- 控件行挂在 item_group 头部 ⇒ 它们**实际占掉**垂直流里的一段高度，算每页条目数时
     -- 必须把这部分扣掉（否则最后一行会被挤出屏幕）。
     -- ⚠️ 只落到 `_store_eff_ah`，绝不能写回 `self.available_height`（v2.16.0 的累加
     --    bug 就是那样来的：封面回填每重绘一次再扣一次，条目越压越扁）。
     local eff_ah = ah
-    local control_h = tab_h + filter_h
+    local control_h = tab_h + filter_h + chip_h
     if control_h > 0 and ah > control_h then eff_ah = ah - control_h end
     self._store_eff_ah = eff_ah > 0 and eff_ah or nil
     if eff_ah > 0 and self.item_dimen then
@@ -780,7 +927,7 @@ end
 
 --- 解析当前生效的显示方式（settings 优先，opts 覆盖其次）。
 ---@return string mode "list" | "grid"
----@return number cols 网格列数（2~8）
+---@return number cols 网格列数（2~8；0 = 按屏宽自适应）
 ---@return number rows 网格行数（1~8；0 = 按屏高自动反推）
 function StoreView.resolve_view(opts)
     opts = opts or {}
@@ -850,9 +997,10 @@ local function build_items(books, opts)
                 cover_path = p
             end
         end
-        -- 原创榜条目带名次（currentPos）：渲染层画成「#N」小徽章（列表在标题右侧、
-        -- 网格暂不画），不再往书名文本里塞「#N 」前缀 —— 徽章有边框有留白，
-        -- 榜单「一眼看得出来是榜」，书名也不会被砍掉一截宽度。
+        -- 榜单条目带名次（原创榜自带 currentPos，其余榜单由 store_ui 按返回顺序编号）：
+        -- 渲染层画成「#N」小徽章（列表在标题右侧、v2.16.29 起网格叠封面左上角），
+        -- 不往书名文本里塞「#N 」前缀 —— 徽章有边框有留白，榜单「一眼看得出来是榜」，
+        -- 书名也不会被砍掉一截宽度。
         local title = tostring(book.title or "")
         -- 网格的书名下那行弱化短行：字数 · 在读（列表的 info 行有完整版；
         -- 网格此前只有书名 + 状态徽章，光溜溜的）。拿不到就不给 —— 不留「 · 」悬挂分隔。
@@ -944,6 +1092,9 @@ function StoreView.show(opts)
         -- tab 栏下面那排「下拉」筛选按钮（v2.16.0）：function(menu) → { { text, on_tap } }。
         -- nil = 不画（搜索菜单等）。每次 updateItems 重新求值 ⇒ 按钮上的当前值永远是活的。
         _store_filters_fn = opts.filters_fn,
+        -- 筛选行下面那排「内容胶囊」（v2.16.29）：function(menu) → { chips=, overflow= }。
+        -- nil = 不画。与筛选行的分工：筛选行点了会弹选择器，胶囊行点一下直接切换。
+        _store_chips_fn = opts.chips_fn,
         _on_left_button = opts.on_left_button,
         _on_refresh = opts.on_refresh,
     }

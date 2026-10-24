@@ -1,16 +1,16 @@
 {
-  "version": "2.16.28",
-  "name": "番茄小说 2.16.28",
+  "version": "2.16.29",
+  "name": "番茄小说 2.16.29",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.28/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.29/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.28/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.28/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.28/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.28/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.29/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.29/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.29/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.29/fanqie.koplugin.zip"
   ],
-  "size": 447155,
-  "sha256": "f5b4d44e26fdad09ec73469fb00876484f278988ad24841c9290c97c9373615b",
-  "notes": "- **与 miuread 等书壳插件共存**（用户实测冲突）：章末「自动下一章」失效——书壳插件\n  会把任何打开的文档收编进自己的会话，番茄切章的「关旧开新」在它眼里是「来历不明的\n  ReaderUI 消失」，触发其重建看门狗（超时回主页 + 全屏过渡 Guard 吞输入），正好压在\n  慢设备加载下一章的空窗上。现在 fanqie 在打开章节前向书壳插件的共享会话表\n  （`_G.__MIUREAD_HOME_SESSION`）声明切换目标，让对方走「计划内文档切换」分支，\n  不再触发看门狗。未安装书壳插件时整段空转。"
+  "size": 452359,
+  "sha256": "9376905ab4999bd527072d36b106b4e240615e134dcdcc86de3ba066f67b9592",
+  "notes": "- **书城导航胶囊化**（参照 book.koplugin 书城与 miuread 首页的常显胶囊）：书库的\n  排序（最热/最新/字数）与状态（不限/连载中/已完结）、原创榜的频道（男频/女频）与\n  主分类改为**常显胶囊行**，点一下原地切换，不再进「排序 ▾ / 性别 ▾ / 分类 ▾」弹窗；\n  放不下的分类收进行尾「更多 ▾」，里面仍是树状选择器（主分类换榜、二级分类跳书库）。\n- **榜单名次徽章**：网页榜 / App 榜 / 原创榜按名次在列表标题右侧与封面左上角画\n  「#N」，前三名反色（黑底白字）一眼看出头部；名次跨页累计。\n- **翻页更少等待**：书库一批 18→30 本、预取提前量 1→2 屏，配合本地切片翻页\n  （参照 book.koplugin「墨水屏上多拉一页就多等一轮网络」的批量拉取口径）。\n- **网格列数自适应**：「显示方式」新增「列数自适应」档，按屏宽自动算列数，\n  书城 / 书架共用同一档。"
 }
