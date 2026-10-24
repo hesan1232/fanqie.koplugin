@@ -19,7 +19,35 @@ local Crypto = {}
 local HARDCODED_KEY = Aes.from_hex("ac25c67ddd8f38c1b37a2348828e222e")
 local AID = 1967
 
+-- 十进制数字串 ÷ 256。每一步的余数小于 256，因此 cur 最大只有 2559，
+-- 不经过 double 的大整数近似，19 位 device_id 也能保留末位。
+local function divmod256(digits)
+    local q, rem = {}, 0
+    for i = 1, #digits do
+        local cur = rem * 10 + (digits:byte(i) - 48)
+        local d = math.floor(cur / 256)
+        rem = cur - d * 256
+        if #q > 0 or d > 0 then q[#q + 1] = string.char(48 + d) end
+    end
+    return table.concat(q), rem
+end
+
 local function le64(n)
+    if type(n) == "string" and n:match("^%d+$") then
+        local digits = n:gsub("^0+", "")
+        if digits == "" then digits = "0" end
+        local out = {}
+        for i = 1, 8 do
+            if digits == "0" then
+                out[i] = "\0"
+            else
+                local q, r = divmod256(digits)
+                out[i] = string.char(r)
+                digits = q == "" and "0" or q
+            end
+        end
+        return table.concat(out)
+    end
     n = tonumber(n) or 0
     local out = {}
     for i = 1, 8 do
