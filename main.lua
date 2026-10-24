@@ -2851,11 +2851,19 @@ function FanQiePlugin:showBookList(books)
         if book.cover then
             -- 命名规则统一交给 cover_cache：新名 <book_id>.jpg，
             -- 找不到时回退旧名 <书名>.jpg（兼容已下载的旧缓存，不强制重下）
-            local cover_path = CoverCache.find(self.settings, book, function(path)
-                return self:_coverCacheUsable(path)
-            end)
+            -- 🔴 CoverCache 是 safe_require，可返回 nil（模块装载失败）——
+            --    三个直接调用点都必须有退化路径（_verify_batch_b B2 场景守的正是这个）。
+            local cover_path
+            if CoverCache then
+                cover_path = CoverCache.find(self.settings, book, function(path)
+                    return self:_coverCacheUsable(path)
+                end)
+            elseif type(book.title) == "string" and book.title ~= "" then
+                cover_path = cover_cache_dir .. "/"
+                    .. string.gsub(book.title, "[/\\:%*%?\"<>|]", "_") .. ".jpg"
+            end
             -- 过期封面**当没有**处理：下面 _preloadAllCovers 会重下并覆盖同名文件
-            if cover_path then
+            if cover_path and self:_coverCacheUsable(cover_path) then
                 book.cover_path = cover_path
             end
         end
@@ -2944,11 +2952,19 @@ function FanQiePlugin:_cacheShelfPageCovers(view, page, first, last, generation,
 
     local cover_cache_dir = self.settings:get_download_dir() .. "/covers"
     if H then H.make_dir(cover_cache_dir) end
-    local cover_path = CoverCache.path(self.settings, book)
-    if not cover_path then next_index() return end
-    local existing = CoverCache.find(self.settings, book, function(path)
-        return self:_coverCacheUsable(path)
-    end)
+    local cover_path, existing
+    if CoverCache then
+        cover_path = CoverCache.path(self.settings, book)
+        if not cover_path then next_index() return end
+        existing = CoverCache.find(self.settings, book, function(path)
+            return self:_coverCacheUsable(path)
+        end)
+    else
+        -- CoverCache 不可用：退回旧的书名命名（无 TTL，只查存在性）
+        cover_path = cover_cache_dir .. "/"
+            .. string.gsub(book.title or "", "[/\\:%*%?\"<>|]", "_") .. ".jpg"
+        if self:_coverCacheUsable(cover_path) then existing = cover_path end
+    end
 
     -- 把封面路径回填到当前页 UI（缓存命中与子进程下载完成共用同一段逻辑）
     local function apply_cover(path)
@@ -3052,15 +3068,23 @@ function FanQiePlugin:_preloadAllCovers(books)
             return
         end
 
-        local cover_path = CoverCache.path(self.settings, book)
-        if not cover_path then
-            UIManager:scheduleIn(0.05, function() preload_one(idx + 1) end)
-            return
+        local cover_path, existing
+        if CoverCache then
+            cover_path = CoverCache.path(self.settings, book)
+            if not cover_path then
+                UIManager:scheduleIn(0.05, function() preload_one(idx + 1) end)
+                return
+            end
+            existing = CoverCache.find(self.settings, book, function(path)
+                return self:_coverCacheUsable(path)
+            end)
+        else
+            -- CoverCache 不可用：退回旧的书名命名（无 TTL，只查存在性）
+            cover_path = cover_cache_dir .. "/"
+                .. string.gsub(book.title or "", "[/\\:%*%?\"<>|]", "_") .. ".jpg"
+            if self:_coverCacheUsable(cover_path) then existing = cover_path end
         end
         local book_id = book.book_id or book.bookId
-        local existing = CoverCache.find(self.settings, book, function(path)
-            return self:_coverCacheUsable(path)
-        end)
 
         -- 文件已存在且未过期，设置路径并更新 UI（过期就往下走重下）
         if existing then
