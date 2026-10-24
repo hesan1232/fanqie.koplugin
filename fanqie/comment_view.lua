@@ -288,6 +288,11 @@ function CommentView:_append_block(group, block, content_w, indent)
                     file = im.path,
                     width = disp_w,
                     height = disp_h,
+                    -- 🔴 必须 alpha=true：ImageWidget 默认按「无透明」平拷贝，
+                    --    带透明通道的 webp/png（番茄表情包/贴纸常见，画布比内容宽、
+                    --    左右留透明边）会把透明区渲染成**黑色**——用户报的
+                    --    「图片左右有黑色占位」。true 时透明区正常透出纸色。
+                    alpha = true,
                     file_do_cache = true,
                 }
             else
@@ -299,6 +304,7 @@ function CommentView:_append_block(group, block, content_w, indent)
                     width = max_w,
                     height = max_w,
                     scale_factor = 0,
+                    alpha = true,   -- 同上：透明通道别渲染成黑
                     file_do_cache = true,
                 }
             end
