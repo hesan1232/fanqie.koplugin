@@ -1,16 +1,16 @@
 {
-  "version": "2.16.29",
-  "name": "番茄小说 2.16.29",
+  "version": "2.16.30",
+  "name": "番茄小说 2.16.30",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.29/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.30/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.29/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.29/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.29/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.29/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.30/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.30/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.30/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.30/fanqie.koplugin.zip"
   ],
-  "size": 452359,
-  "sha256": "9376905ab4999bd527072d36b106b4e240615e134dcdcc86de3ba066f67b9592",
-  "notes": "- **书城导航胶囊化**（参照 book.koplugin 书城与 miuread 首页的常显胶囊）：书库的\n  排序（最热/最新/字数）与状态（不限/连载中/已完结）、原创榜的频道（男频/女频）与\n  主分类改为**常显胶囊行**，点一下原地切换，不再进「排序 ▾ / 性别 ▾ / 分类 ▾」弹窗；\n  放不下的分类收进行尾「更多 ▾」，里面仍是树状选择器（主分类换榜、二级分类跳书库）。\n- **榜单名次徽章**：网页榜 / App 榜 / 原创榜按名次在列表标题右侧与封面左上角画\n  「#N」，前三名反色（黑底白字）一眼看出头部；名次跨页累计。\n- **翻页更少等待**：书库一批 18→30 本、预取提前量 1→2 屏，配合本地切片翻页\n  （参照 book.koplugin「墨水屏上多拉一页就多等一轮网络」的批量拉取口径）。\n- **网格列数自适应**：「显示方式」新增「列数自适应」档，按屏宽自动算列数，\n  书城 / 书架共用同一档。"
+  "size": 1051993,
+  "sha256": "f118feabaff9b8b507f84165ab3e1fbf737723bda2797f3d825d99f439b81613",
+  "notes": "- **段评表情**（PR #16）：`[吃瓜]` 等表情码解码为 emoji（260 段实采码表、经字体\n  cmap 校验），内置 Noto Emoji 字体（OFL 1.1）作回退；未收录的码原样保留不吞正文。\n- **阅读统计按整本书合并**（PR #17）：番茄一章一个文件、KOReader 统计默认一章一条，\n  现按书号合成一条记录，页号跨章统一编号，进度/时长不再被各章互相覆盖。\n- **设备身份修复**（PR #13）：19 位 device_id 用字符串大数除法精确编码 + JSON 裸数字\n  预补引号，换取密钥不再因 double 舍入末位失真。\n- **书架封面按书号命名**（PR #15）：同名书不再共用封面；旧 `<书名>.jpg` 缓存兼容\n  不重下；书架孤儿封面按在架集合回收。\n- **Async 加固**（PR #14）：轮询链异常按失败收口，进度框不再永久卡住；\n  完成回调保证只到达一次。"
 }
