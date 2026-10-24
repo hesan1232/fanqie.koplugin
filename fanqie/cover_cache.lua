@@ -5,7 +5,7 @@
 书城的书封面会随活动/版本换图，书架的封面也可能换，于是一台常用设备上：
 
     <下载目录>/store_covers/<book_id>.jpg   书城/榜单/搜索的封面
-    <下载目录>/covers/<书名>.jpg            书架的封面
+    <下载目录>/covers/<book_id>.jpg（旧缓存仍兼容 <书名>.jpg）
 
 会只增不减。本模块提供三件事：
 
@@ -40,6 +40,47 @@ local T = ok_ffiutil and ffiutil.template or function(fmt, ...) return fmt end
 local CoverCache = {}
 
 CoverCache.DAY = 86400
+
+--- 书架封面统一按书号命名：同名书不能共用一个文件。
+--- 旧的书名命名仍由 find() 兼容，不要求用户重新下载整架封面。
+local function safe_name(value)
+    return (tostring(value or ""):gsub("[/\\:%*%?\"<>|]", "_"))
+end
+
+function CoverCache.filename(book)
+    if type(book) ~= "table" then return nil end
+    local id = book.book_id or book.bookId
+    if id ~= nil and tostring(id) ~= "" then return safe_name(id) .. ".jpg" end
+    return nil
+end
+
+function CoverCache.legacy_filename(book)
+    if type(book) ~= "table" or type(book.title) ~= "string" or book.title == "" then
+        return nil
+    end
+    return safe_name(book.title) .. ".jpg"
+end
+
+--- 新下载路径；没有书号时回退旧名（书城书籍通常一定有书号）。
+function CoverCache.path(settings, book)
+    local name = CoverCache.filename(book) or CoverCache.legacy_filename(book)
+    if not name or type(settings) ~= "table" then return nil end
+    local dir = settings:get_download_dir() .. "/covers"
+    H.make_dir(dir)
+    return dir .. "/" .. name
+end
+
+--- 依次查找新名与旧名；usable(path) 可同时检查有效期。
+function CoverCache.find(settings, book, usable)
+    local dir = settings:get_download_dir() .. "/covers"
+    for _i, name in ipairs({ CoverCache.filename(book), CoverCache.legacy_filename(book) }) do
+        if name then
+            local path = dir .. "/" .. name
+            if (not usable or usable(path)) and H.file_exists(path) then return path end
+        end
+    end
+    return nil
+end
 
 --- 有效期档位（天）；0 = 永不失效。对话框与菜单共用这一份。
 --- 🔴 三处必须同口径：这里 / `settings.lua` 的 `COVER_CACHE_DAYS_DEFAULT` /
@@ -233,6 +274,46 @@ function CoverCache.maybe_auto_prune(settings, dirs, now)
         settings:set_cover_cache_pruned_at(t)
     end
     return total
+end
+
+--- 删除不在本次书架集合中的旧封面。与 TTL 不同：这是空间回收，不会让
+--- 仍在架的书因为“最近没写过封面”而被误删。
+--- 仅在拿到完整、非空且能生成保留集合的书架时调用；调用方负责保证完整性。
+function CoverCache.prune_shelf_orphans(settings, books)
+    local out = { removed = 0, bytes = 0, kept = 0, failed = 0 }
+    if type(books) ~= "table" or #books == 0 or type(settings) ~= "table" then return out end
+    local keep = {}
+    for _i, book in ipairs(books) do
+        local id = CoverCache.filename(book)
+        if id then keep[id] = true end
+        local legacy = CoverCache.legacy_filename(book)
+        if legacy then keep[legacy] = true end
+    end
+    if next(keep) == nil then return out end
+    local dir = settings:get_download_dir() .. "/covers"
+    local ok, iter, dir_obj = pcall(lfs.dir, dir)
+    if not ok or not iter then return out end
+    -- 先列清单再删除：遍历期间不修改目录。
+    local dead = {}
+    for name in iter, dir_obj do
+        if name ~= "." and name ~= ".." and IMAGE_SUFFIX[CoverCache.suffix(name)] then
+            if keep[name] then
+                out.kept = out.kept + 1
+            else
+                dead[#dead + 1] = dir .. "/" .. name
+            end
+        end
+    end
+    for _i, path in ipairs(dead) do
+        local size = H.file_size(path) or 0
+        if H.delete_file(path) then
+            out.removed = out.removed + 1
+            out.bytes = out.bytes + size
+        else
+            out.failed = out.failed + 1
+        end
+    end
+    return out
 end
 
 --- 段评图片有效期档位文案：分钟 / 整小时 / 永久（菜单与确认框共用）。
