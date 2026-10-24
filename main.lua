@@ -262,7 +262,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.27",
+    version = Info and Info.version or "2.16.28",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -4067,8 +4067,51 @@ function FanQiePlugin:openChapter(book, chapters, chapter_index)
     })
 end
 
+-- 向「接管 ReaderUI 生命周期的书壳插件」声明一次计划内的文档切换。
+--
+-- 背景：miuread 这类书壳插件会把**任何**打开的文档（包括番茄章节 HTML）收编进
+-- 自己的会话，然后在 `onCloseDocument` 里区分三种关闭：它自己发起的 / 计划内的
+-- 文档切换（`HOME_SESSION.opening_file` 已指向新文档）/ **来历不明的 ReaderUI
+-- 消失**。第三种会触发它的「重建看门狗」（0.22s 起步轮询，2.4~18s 超时），
+-- 超时后走「读者已关闭」收尾——回主页、装全屏过渡 Guard（`stop_events_propagation`
+-- 且在 `ReaderUI.instance.document` 为空的窗口期吞掉一切输入）。慢设备上 crengine
+-- 加载下一章的耗时很容易越过看门狗预算，于是「章末自动下一章」的关旧开新被它的
+-- 回主页机制抢跑/吞掉，表现为「跳下一章失败」。
+--
+-- 修法：miuread 把会话状态故意放在全局 `_G.__MIUREAD_HOME_SESSION`（它的 Home
+-- 实例与 Reader 实例就靠这个共享），我们在 showReader 前**声明**切换目标，
+-- 它的 `onCloseDocument` 就会走「计划内文档切换」分支：干净收尾旧实例，
+-- 不启看门狗、不回主页。表不存在 = 没装书壳插件，整段空转。
+--
+-- ⚠️ 只做防御性 pcall + 字段级写入：对方改字段名/改实现时这里静默降级，
+-- 绝不能反过来被它拖崩。`opening_kind` 置 ""（番茄章节不是它的 local/weread 书）。
+function FanQiePlugin:_announceDocSwitchToShell(path)
+    pcall(function()
+        local session = rawget(_G, "__MIUREAD_HOME_SESSION")
+        if type(session) ~= "table" then return end
+        session.opening_file = path
+        session.opening_at = os.time()
+        session.opening_kind = ""
+        session.opening_book_id = ""
+    end)
+end
+
+-- 打开失败/被取消时撤回声明，避免残留的 opening_file 把下一次无关关闭
+-- 误判成「计划内切换」（那样书壳插件会跳过本该做的收尾）。
+function FanQiePlugin:_retractDocSwitchAnnouncement(path)
+    pcall(function()
+        local session = rawget(_G, "__MIUREAD_HOME_SESSION")
+        if type(session) ~= "table" then return end
+        if session.opening_file == path then
+            session.opening_file = nil
+            session.opening_at = 0
+        end
+    end)
+end
+
 function FanQiePlugin:showReaderUI(path, chapter)
     local ReaderUI = require("apps/reader/readerui")
+    self:_announceDocSwitchToShell(path)
 
     -- 章节切换已完成（新文档即将加载），清除导航标志
     _state.setChapterNavigating(false)
@@ -4091,6 +4134,7 @@ function FanQiePlugin:showReaderUI(path, chapter)
         ReaderUI:showReader(path, nil, true)  -- seamless=true 隐藏"打开文件"提示
     end)
     if not ok then
+        self:_retractDocSwitchAnnouncement(path)
         _state.chapter_switch_pending = false
         Log.error("showReaderUI failed:", log_error(err))
         self:showError(T(_("打开文档失败:\n%1"), display_error(err)))
