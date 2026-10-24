@@ -121,6 +121,9 @@ local Info = safe_require("fanqie.info")
 -- 异步子进程模块：把进度上传 / 预下载等阻塞网络操作移出 UI 线程，消除卡顿。
 local Async = safe_require("fanqie.async")
 
+-- 阅读统计合并：把一章一个 .html 的番茄书在 KOReader 统计里合成一条记录
+local Stats = safe_require("fanqie.stats")
+
 -- 在线更新（自更新）：启动自检 + 静默自动检查 + 菜单入口
 local UpdaterUI = safe_require("fanqie.updater_ui")
 
@@ -379,6 +382,25 @@ function FanQiePlugin:onReaderReady()
     local ok, err = pcall(function() self:_muteEndDocumentAction() end)
     if not ok and Log and Log.error then
         Log.error("mute end_document_action failed:", tostring(err))
+    end
+    -- 阅读统计按「整本书」合并：番茄每章一个 .html，KOReader 默认会把每章当成
+    -- 一本书；这里在 statistics 实例上换成按 book_id 的固定身份（界面标题不变）。
+    local ok_stat, stat_res = pcall(Stats.sync, self.ui, self.settings)
+    if not ok_stat then
+        if Log and Log.warn then Log.warn("stats merge failed:", tostring(stat_res)) end
+    elseif type(stat_res) == "table" then
+        if Log and Log.info then
+            Log.info("[FanQie] 阅读统计按书合并:", tostring(stat_res.title),
+                "/", tostring(stat_res.book_id))
+        end
+        -- 作者兜底：书架接口不返回作者，唯一来源是书籍详情页。
+        -- 只在仍是 N/A 时触发一次异步抓取（有缓存则直接回填统计库）。
+        if stat_res.authors == "N/A" and stat_res.book_id then
+            local ok_bm, BookMeta = pcall(require, "fanqie.book_meta")
+            if ok_bm and type(BookMeta) == "table" and BookMeta.ensure then
+                pcall(BookMeta.ensure, self.settings, stat_res.book_id)
+            end
+        end
     end
 end
 
