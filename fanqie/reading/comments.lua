@@ -108,6 +108,9 @@ end
 ---@param book_id string 书籍ID
 ---@param para_index number 段落序号（正文 blk 的 p_idx）
 ---@param opts table|nil { count, cursor, sort, item_version }
+---   sort（2026-10-26 APK 字节码级还原：GetCommentListRequest.UgcSortEnum 只有三个值）：
+---     1=SmartHot 智能热门（App 默认，权重在服务端）2=TimeAsc 时间正序 3=TimeDesc 时间倒序。
+---     旧版默认传 0 是 web 协议语义（0=最热），App 枚举里没有 0 —— 缺省一律按 1。
 ---@return table|nil data_list 原始条目数组（未经归一，用 flatten_comment 转换）
 ---@return table|nil info { cursor, has_more, total }
 ---@return string|nil err
@@ -123,7 +126,9 @@ function Comments.list(client, settings, item_id, book_id, para_index, opts)
         comment_type = COMMENT_TYPE,
         group_type = COMMENT_GROUP_TYPE,
         count = math.min(math.floor(tonumber(opts.count) or 20), COMMENT_MAX_COUNT),
-        sort = math.floor(tonumber(opts.sort) or 0),
+        -- UgcSortEnum：1=SmartHot（App 默认）/ 2=TimeAsc / 3=TimeDesc。
+        -- 0 不在枚举里（旧 web 语义），缺省按 1 走「智能热门」。
+        sort = math.floor(tonumber(opts.sort) or 1),
         cursor = tostring(opts.cursor or ""),
         business_param = {
             book_id = tostring(book_id),

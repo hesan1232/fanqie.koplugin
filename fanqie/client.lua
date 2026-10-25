@@ -875,7 +875,8 @@ end
 -- 段评列表（官方 App commentapi）。ident 格式 fqapp://book_id/item_id/para_index。
 -- opts: { count = number|nil 单页条数（≤50，默认 10）,
 --         cursor = string|nil 翻页游标（首屏 ""）,
---         sort = number|nil 0|3=热门 1=最新,
+--         sort = number|nil UgcSortEnum：1=SmartHot 智能热门（默认）/ 2=TimeAsc / 3=TimeDesc
+--               （2026-10-26 APK 还原；旧默认 0 是 web 语义，App 枚举里没有 0）,
 --         item_version = string|nil 章节 version（缺省 "0"） }
 --
 -- 返回结构对齐 kindle-forge `api.get_para_comments`：
@@ -892,7 +893,7 @@ function Client:official_get_para_review(ident, opts)
         tonumber(para_index), {
             count = tonumber(opts.count) or 10,
             cursor = tostring(opts.cursor or ""),
-            sort = tonumber(opts.sort) or 0,
+            sort = tonumber(opts.sort) or 1,
             item_version = opts.item_version,
         })
     if not data_list then
