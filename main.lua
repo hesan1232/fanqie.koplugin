@@ -265,7 +265,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.32",
+    version = Info and Info.version or "2.16.33",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -494,9 +494,8 @@ end
 
 -- 书城入口的名字一律登记在这里；模块内部辅助函数是 local，不需要登记。
 local STORE_MIXIN = {
-    "showStore",             -- 书城根菜单（分类浏览 / 排行榜 / 搜索）
-    "showStoreBrowser",      -- 分类浏览（男频/女频 → 分类分组 → 分类 → 书籍列表）
-    "showStoreRanks",        -- 排行榜（最近更新 / 推荐榜）
+    "showStore",             -- 书城（v2.16.33 直达推荐榜；榜单/搜索 tab 切换）
+    "showStoreRanks",        -- 排行榜（网页 3 榜直达 + 小说/出版/礼物分组）
     "showStoreSearch",       -- 搜索（输入框 → 结果列表）
     "showStoreBookDetail",   -- 书城书籍详情（加入/移出书架、阅读、目录、下载）
     "toggleStoreShelf",      -- 加入 / 移出书架（异步）

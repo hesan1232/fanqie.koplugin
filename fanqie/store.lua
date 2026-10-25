@@ -623,19 +623,24 @@ Store.APP_CELL = {
 }
 
 --- App 榜单目录。`expect` = 期望的响应榜名（见 Store.rank_cell 的校验注释）。
---- group: "male" 男频 11 榜 / "pub" 出版物 6 榜。
+--- group: "male" 小说 11 榜 / "pub" 出版物 6 榜。
+--- v2.16.33：UI 收敛成「小说 / 出版」两大类（见 showStoreRanks），male 组改名口径
+--- 为「小说榜单」，顺序对齐 App 排行榜页（推荐/完本/追更/黑马/巅峰/阅读…）。
+--- 🔴 2026-10-25 algo 扫描（_scan_rank_algos.py）发现同 cell 下还有 飙升126/收藏127/
+---    新书131/热播132/抖音156/影视165/听书201 等榜名，但书池混入出版书（同名不同池），
+---    未经真实设备抓包核实前**不接**。
 Store.APP_RANKS = {
     { key = "app_recommend", group = "male", label = "推荐榜", algo = 101, expect = "推荐榜" },
     { key = "app_end",       group = "male", label = "完本榜", algo = 100, expect = "完本榜" },
-    { key = "app_read",      group = "male", label = "阅读榜", algo = 111, expect = "阅读榜" },
-    { key = "app_highscore", group = "male", label = "高分榜", algo = 115, expect = "高分榜" },
-    { key = "app_reputation", group = "male", label = "口碑榜", algo = 104, expect = "口碑榜" },
     { key = "app_chase",     group = "male", label = "追更榜", algo = 109, expect = "追更榜" },
-    { key = "app_comment",   group = "male", label = "热评榜", algo = 110, expect = "热评榜" },
     { key = "app_darkhorse", group = "male", label = "黑马榜", algo = 102, expect = "黑马榜" },
-    { key = "app_hotsearch", group = "male", label = "热搜榜", algo = 103, expect = "热搜榜" },
-    { key = "app_popular",   group = "male", label = "人气榜", algo = 146, expect = "人气榜" },
     { key = "app_peak",      group = "male", label = "巅峰榜", algo = 200, expect = "巅峰榜" },
+    { key = "app_read",      group = "male", label = "阅读榜", algo = 111, expect = "阅读榜" },
+    { key = "app_reputation", group = "male", label = "口碑榜", algo = 104, expect = "口碑榜" },
+    { key = "app_highscore", group = "male", label = "高分榜", algo = 115, expect = "高分榜" },
+    { key = "app_popular",   group = "male", label = "人气榜", algo = 146, expect = "人气榜" },
+    { key = "app_comment",   group = "male", label = "热评榜", algo = 110, expect = "热评榜" },
+    { key = "app_hotsearch", group = "male", label = "热搜榜", algo = 103, expect = "热搜榜" },
     { key = "pub_recommend", group = "pub", label = "推荐榜", algo = 112, expect = "推荐榜" },
     { key = "pub_read",      group = "pub", label = "阅读榜", algo = 113, expect = "阅读榜" },
     { key = "pub_classic",   group = "pub", label = "名著榜", algo = 114, expect = "名著榜" },

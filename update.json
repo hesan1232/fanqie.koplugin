@@ -1,16 +1,16 @@
 {
-  "version": "2.16.32",
-  "name": "番茄小说 2.16.32",
+  "version": "2.16.33",
+  "name": "番茄小说 2.16.33",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.32/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.33/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.32/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.32/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.32/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.32/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.33/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.33/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.33/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.33/fanqie.koplugin.zip"
   ],
-  "size": 1054577,
-  "sha256": "1cc1d02ae086f34e49877fb25dbacbff1adae1cabd1b1f09580fb8c5abd63c90",
-  "notes": "- **段评点赞改爱心**：楼层底部「赞N」统一为「♥N」，回复行去掉「回复N」，与 App 口径一致。\n- **评论者标签与 App 对齐**：按真实接口结构解析 user_title_info 数组，vip 头衔不再混入文字标签（走金色挂件），新增「官方」「小编」徽标。\n- **段评顶部文案**：「段评」改为「N 条回复」+ 页码后缀。\n- **书城分类重排**：男频/女频胶囊移至「最热/最新」行最左；两级分类选中即清翻页锚点，修复页码不重置问题。\n- **榜单两级分组**：首屏 5 个分组弹窗（网页榜单/原创榜/男频榜单/出版榜单/礼物榜），进组再选具体榜。"
+  "size": 1046817,
+  "sha256": "e71e9a271893a9637c8b0d6230af26107b47505d69509a571dfcf1fdbe61841f",
+  "notes": "- **书城收敛**：点开直达推荐榜；网页榜单只保留最近更新 / 推荐榜 / 巅峰榜三个，顶部 tab 原地切换。\\n- **二级分类整链下线**：书库分类浏览（book_list/v0 全套筛选）与原创榜分类两级（rank/category/list）按用户要求删除，书城收敛为「榜单 + 搜索」两条路。\\n- **榜单分两大类**：小说 11 榜（推荐/完本/追更/黑马/巅峰/阅读/口碑/高分/人气/热评/热搜）与出版 6 榜（推荐/阅读/名著/收藏/新书/典藏），另有礼物榜 4 榜；选择器带分组分隔头，短组弹小窗、长组开全屏。\\n- **操作框瘦身**：排序/状态/分类/性别筛选随书库链路一并下线，操作框只剩加载更多 / 显示方式 / 重新加载 / 搜索。"
 }
