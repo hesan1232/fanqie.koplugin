@@ -199,7 +199,8 @@ Comments.MAX_TITLES = 3
 
 --- 从 user_tag 抽取**纯文本**头衔列表。
 --
--- 真实结构（2026-10-14 抓真实响应实测，见 .workbuddy/tools/_probe_comment_title*.py）：
+-- 真实结构（2026-10-14 抓真实响应实测，见 .workbuddy/tools/_probe_comment_title*.py；
+-- 2026-10-25 复探（v2.16.32）：user_tag 字段没有变，补齐了 App 有而我们漏的标签）：
 --   user_tag = {
 --     is_author / is_vip / is_blue_vip / is_cp / is_official_cert = bool,
 --     user_title_info = { { zh_title = "作家",      en_title = "author",
@@ -209,17 +210,24 @@ Comments.MAX_TITLES = 3
 --                           icon  = "<JSON 字符串>"  -- {icon_default_url,icon_width,…}
 --                         }, … },
 --     sticker = { is_worn = true, sticker = { name = "故事合伙人", url = …, … } },
+--     fan_rank_num / fan_ranklist_title = 粉丝榜（实测恒 0/""，App 也不渲染成文字）
 --   }
 --
--- 🔴 只取 `zh_title`：
+-- 🔴 只取 `zh_title`，且**跳过 `is_vip_title == true` 的条目**（v2.16.32）：
 --   · `icon` 是**图片**、`label` 是**颜色 JSON** —— 墨水屏既画不了色，
 --     也不该为一个头衔再发起一次图片请求（段评图已经够贵了）。
 --   · `zh_title` 实测取值：「作家」「作家Lv.2」「vip」「svip」「次元破壁神」
 --     「灵感探索者」「满级诡客」「巅峰造浪人」…（vip/svip 就是小写英文原样）。
+--     🔴 App 里 VIP 是**图标**不是文字标签 —— 旧版照单全收把「vip」渲染成
+--     「［vip］」，就是用户报的「标签和 App 上显示的不一样」。
 -- ⚠️ `user_title_info` 里少数条目**没有 zh_title**（或为空串）——必须跳过，
 --    否则会渲染出空括号「［］」。
 -- ⚠️ 挂件（`sticker.sticker.name`，如「故事合伙人」）在 App 里同样是名字旁的
 --    装饰，一并收进头衔列表（`is_worn == false` 的不算）。
+-- 🔴 布尔标签补齐（v2.16.32）：App 会渲染「官方」「小编」徽标而旧版没显示 ——
+--    `is_official_cert` → 「官方」、`is_cp` → 「小编」；`is_vip`/`is_blue_vip`
+--    在 App 里都是图标，文字渲染跳过（否则满屏［VIP］比 vip 头衔还吵）。
+--    顺序对齐 App：作者 > 官方 > 小编 > 头衔 > 装扮。
 --
 -- @param tag table user_info.user_tag（可为 nil）
 -- @return table 字符串数组（保持接口给的顺序，已去重，最多 MAX_TITLES 个）
@@ -237,11 +245,20 @@ function Comments.titles_of(tag)
         return #out >= Comments.MAX_TITLES
     end
 
+    if tag.is_official_cert == true then
+        if push(_("官方")) then return out end
+    end
+    if tag.is_cp == true then
+        if push(_("小编")) then return out end
+    end
+
     local list = tag.user_title_info
     if type(list) == "table" then
         local full = false
         for _i, t in ipairs(list) do
-            if push(type(t) == "table" and t.zh_title or nil) then
+            if type(t) == "table" and t.is_vip_title == true then
+                -- VIP 头衔是图标语义，文字渲染跳过（见函数头注释）
+            elseif push(type(t) == "table" and t.zh_title or nil) then
                 full = true
                 break
             end
@@ -250,7 +267,11 @@ function Comments.titles_of(tag)
         -- 对象表」（部分解码器/服务端会把空数组写成 {}）则退回 pairs。
         if not full and #out == 0 and next(list) ~= nil then
             for _k, t in pairs(list) do
-                if push(type(t) == "table" and t.zh_title or nil) then break end
+                if type(t) == "table" and t.is_vip_title == true then
+                    -- 同上：VIP 图标跳过
+                elseif push(type(t) == "table" and t.zh_title or nil) then
+                    break
+                end
             end
         end
     end

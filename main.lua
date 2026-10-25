@@ -265,7 +265,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.31",
+    version = Info and Info.version or "2.16.32",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -1013,7 +1013,7 @@ local function append_reply_lines(nodes, out)
         if node.reply_to_user_name and node.reply_to_user_name ~= node.user_name then
             to = T(_(" 回复 %1"), tostring(node.reply_to_user_name))
         end
-        local head = T(_("%1↳ %2%3%4 (赞%5)"), indent,
+        local head = T(_("%1↳ %2%3%4 (♥%5)"), indent,
             tostring(node.user_name or _("匿名")), comment_titles_text(node), to,
             tonumber(node.digg_count) or 0)
         local ts = fmt_comment_time(node.create_time)
@@ -1085,7 +1085,9 @@ local function append_comment_lines(number, comment, expanded)
         out[#out + 1] = body
     end
     local ts = fmt_comment_time(comment.create_time)
-    local foot = T(_("赞%1 · 回复%2"), tostring(likes), tostring(replies))
+    -- v2.16.32：点赞改爱心（♥），回复数从统计行去掉（「展开 N 条回复」操作行
+    -- 已经在下面单独成行，数字写两遍只有噪音 —— 用户原话「去除回复n条」）。
+    local foot = T(_("♥%1"), tostring(likes))
     if ts ~= "" then foot = foot .. "  " .. ts end
     out[#out + 1] = foot
     -- v2.16.14 与主路径同口径：折叠标记单独一行（纯文本回退路径没有颜色可言，
@@ -1288,7 +1290,7 @@ local function build_reply_blocks(plugin, roots)
             if node.reply_to_user_name and node.reply_to_user_name ~= node.user_name then
                 to = T(_(" 回复 %1"), tostring(node.reply_to_user_name))
             end
-            local head = T(_("↳ %1%2%3 · 赞%4"), tostring(node.user_name or _("匿名")),
+            local head = T(_("↳ %1%2%3 · ♥%4"), tostring(node.user_name or _("匿名")),
                 comment_titles_text(node), to,
                 tonumber(node.digg_count) or 0)
             local ts = fmt_comment_time(node.create_time)
@@ -1607,7 +1609,9 @@ function FanQiePlugin:_renderParaReviewView(in_place)
         -- 展开 m 条回复应该是白色，展开 n 条回复应该单独开一行」）—— 统计是信息（灰），
         -- 展开/收起是操作（正文色、单独一行、紧贴回复树）。
         local ts = fmt_comment_time(comment.create_time)
-        local foot = T(_("赞%1 · 回复%2"), tostring(likes), tostring(replies))
+        -- v2.16.32：点赞改爱心（♥）；回复数从统计行去掉（折叠行「展开 N 条回复」
+        -- 是操作、单独成行且用正文色 —— 同一个数字灰一遍白一遍只有噪音）。
+        local foot = T(_("♥%1"), tostring(likes))
         if ts ~= "" then foot = foot .. "  " .. ts end
         -- 折叠标记（nil = 该条没有回复、也没展开 ⇒ 不显示这一行）
         local fold
@@ -1758,8 +1762,11 @@ function FanQiePlugin:_renderParaReviewView(in_place)
     }
     buttons_table[#buttons_table + 1] = page_row
 
-    -- v2.16.8 起标题不带「第几条/共几条」：翻页指示（第X/Y页）保留在后面。
-    local viewer_title = _("段评")
+    -- v2.16.32：标题改「N 条回复」（对齐 App 的评论区顶栏）；total 拿不到时退回
+    -- 「段评」。翻页指示（第X/Y页）保留在后面（v2.16.8 口径不变）。
+    local viewer_title = total > 0
+        and T(_("%1 条回复"), tostring(total))
+        or _("段评")
     if total_pages then
         viewer_title = viewer_title .. T(_(" 第%1/%2页"), tostring(page), tostring(total_pages))
     end
@@ -1941,7 +1948,10 @@ function FanQiePlugin:_renderParaReviewText(in_place)
     }
 
     -- v2.16.8 起标题不带「第几条/共几条」（与 CommentView 主路径同口径）
-    local viewer_title = _("段评")
+    -- v2.16.32：标题改「N 条回复」，同主路径。
+    local viewer_title = (state.total or 0) > 0
+        and T(_("%1 条回复"), tostring(state.total))
+        or _("段评")
     if total_pages then
         viewer_title = viewer_title .. T(_(" 第%1/%2页"), tostring(page), tostring(total_pages))
     end

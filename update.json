@@ -1,16 +1,16 @@
 {
-  "version": "2.16.31",
-  "name": "番茄小说 2.16.31",
+  "version": "2.16.32",
+  "name": "番茄小说 2.16.32",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.31/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.32/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.31/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.31/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.31/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.31/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.32/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.32/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.32/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.32/fanqie.koplugin.zip"
   ],
-  "size": 1052357,
-  "sha256": "fdd5a9c10b9452c720dd89a1ad7b310dd5ea1bdde76dbfc558f2a3fa77a0f10a",
-  "notes": "- **修复：段评内嵌图片左右出现黑色占位**。KOReader ImageWidget 默认不处理透明通道\n  （`alpha=false` 平拷贝），番茄表情包/贴纸类图片（带透明、画布比内容宽）的透明区\n  被渲染成黑色。内嵌两处渲染补 `alpha=true`，透明区恢复纸色；全屏查看器本就支持。"
+  "size": 1054577,
+  "sha256": "1cc1d02ae086f34e49877fb25dbacbff1adae1cabd1b1f09580fb8c5abd63c90",
+  "notes": "- **段评点赞改爱心**：楼层底部「赞N」统一为「♥N」，回复行去掉「回复N」，与 App 口径一致。\n- **评论者标签与 App 对齐**：按真实接口结构解析 user_title_info 数组，vip 头衔不再混入文字标签（走金色挂件），新增「官方」「小编」徽标。\n- **段评顶部文案**：「段评」改为「N 条回复」+ 页码后缀。\n- **书城分类重排**：男频/女频胶囊移至「最热/最新」行最左；两级分类选中即清翻页锚点，修复页码不重置问题。\n- **榜单两级分组**：首屏 5 个分组弹窗（网页榜单/原创榜/男频榜单/出版榜单/礼物榜），进组再选具体榜。"
 }

@@ -824,14 +824,28 @@ local function library_filters(plugin, menu)
     }
 end
 
---- 书库胶囊行（v2.16.29）：排序（最热/最新/字数）+ 状态（不限/连载中/已完结）
---- 常显在筛选行下一排，点一下 `patch_filters_and_reload` 原地刷新（值没变就不动）。
+--- 书库胶囊行（v2.16.29 排序+状态；v2.16.32 性别挪进来放**最左**）：
+--- [男频 女频 | 最热 最新 字数 | 不限 连载中 已完结]，点一下原地刷新（值没变就不动）。
+--- 用户原话「男频女频的分类应该在最热 最新那一行最左边」—— 频道本质上也是
+--- 一个筛选维度（换频道还会回落分类），放在 tab 行当导航本来就别扭。
 --- 参照 book.koplugin 的 browse chips 与 miuread 的胶囊 tab：短值集合直接摆在
 --- 界面上比收在弹窗里「现代」得多，也少一次全屏刷新。
 local function library_chips(plugin, menu)
     local state = menu._store_state
     if not state then return nil end
     local chips = {}
+    -- 频道（最左）：换频道走 switch_library_gender（它会回落分类，男/女两棵分类树）
+    local genders = {
+        { Store.GENDER.male, _("男频") },
+        { Store.GENDER.female, _("女频") },
+    }
+    for _i, g in ipairs(genders) do
+        chips[#chips + 1] = {
+            text = g[2],
+            active = state.gender == g[1],
+            on_tap = function() switch_library_gender(plugin, menu, g[1]) end,
+        }
+    end
     local sorts = {
         { Store.SORT.hot, _("最热") },
         { Store.SORT.new, _("最新") },
@@ -948,8 +962,15 @@ local function category_tree_entries(plugin, gender, list, on_pick, reshow, opts
     fold = fold[gender]
 
     local entries = {}
+    -- 🔴 选中即清锚点：锚点只为「展开组 → 重开定位回该组」服务，真选了分类后
+    --    下次打开不该再跳（那次跳是展开动作留下的）。
+    -- ⚠️ 必须定义在**所有**条目构造之前：闭包只能捕获词法上已声明的 local。
+    local function fire(fn, c)
+        plugin._store_cat_anchor = nil
+        if fn then fn(c) end
+    end
     if opts.all_first then
-        entries[#entries + 1] = { text = _("全部"), callback = function() on_pick(nil) end }
+        entries[#entries + 1] = { text = _("全部"), callback = function() fire(on_pick, nil) end }
     end
     -- 二级分类的选中回调：分类浏览里二级与主分类同路（都走书库接口）；榜单里
     -- **接口只认主分类** ⇒ 二级分类由调用方指定另一条路（跳书库，见 sub_pick）。
@@ -966,16 +987,23 @@ local function category_tree_entries(plugin, gender, list, on_pick, reshow, opts
                 text = T(_("── %1（%2）──"), g.label, tostring(#(g.items or {}))),
             }
             for _j, c in ipairs(g.items or {}) do
-                entries[#entries + 1] = { text = c.name, callback = function() on_pick(c) end }
+                entries[#entries + 1] = { text = c.name, callback = function() fire(on_pick, c) end }
             end
         else
             -- 二级分类组：折叠成一行（▸ 展开 / ▾ 收起），树状评论区的同款交互
             local expanded = fold[g.label] and true or false
+            -- 🔴 锚点（v2.16.32）：重开选择器后要定位回刚切换的组 —— 否则展开
+            --    「主题」后选择器回到第一页，用户得重新往下翻（实测反馈）。
+            --    锚记在 plugin 上（含性别），entries 构造时在组头行打 anchor 标记，
+            --    show_chooser 会换算成页码（见 show_chooser_menu）。
+            local anchor_here = plugin._store_cat_anchor == g.label
             entries[#entries + 1] = {
                 text = (expanded and "▾ " or "▸ ")
                     .. T(_("%1（%2）"), g.label, tostring(#(g.items or {}))),
+                anchor = anchor_here or nil,
                 callback = function()
                     fold[g.label] = not fold[g.label]
+                    plugin._store_cat_anchor = g.label
                     reshow()
                 end,
             }
@@ -984,7 +1012,7 @@ local function category_tree_entries(plugin, gender, list, on_pick, reshow, opts
                     -- 展开后缩进一级（全角空格），组名前缀不再需要 —— 头一行就是组名
                     entries[#entries + 1] = {
                         text = "　" .. c.name,
-                        callback = function() sub_pick(c) end,
+                        callback = function() fire(sub_pick, c) end,
                     }
                 end
             end
@@ -995,18 +1023,18 @@ local function category_tree_entries(plugin, gender, list, on_pick, reshow, opts
         --    锁死在几个折叠组里 —— 退回旧版压平行为，全部条目走主选中回调。
         entries = {}
         if opts.all_first then
-            entries[#entries + 1] = { text = _("全部"), callback = function() on_pick(nil) end }
+            entries[#entries + 1] = { text = _("全部"), callback = function() fire(on_pick, nil) end }
         end
         for _i, c in ipairs(list or {}) do
-            entries[#entries + 1] = { text = c.name, callback = function() on_pick(c) end }
+            entries[#entries + 1] = { text = c.name, callback = function() fire(on_pick, c) end }
         end
         if opts.all_last then
-            entries[#entries + 1] = { text = _("全部"), callback = function() on_pick(nil) end }
+            entries[#entries + 1] = { text = _("全部"), callback = function() fire(on_pick, nil) end }
         end
         return entries
     end
     if opts.all_last then
-        entries[#entries + 1] = { text = _("全部"), callback = function() on_pick(nil) end }
+        entries[#entries + 1] = { text = _("全部"), callback = function() fire(on_pick, nil) end }
     end
     if #entries == 0 then
         -- 分类树拿不到（接口异常/字段变了）时，别给用户一个空菜单
@@ -1055,15 +1083,11 @@ show_library_categories = function(plugin, menu)
 end
 
 --- 分类浏览列表的 tab 栏描述（active 由当前 state 现算，见 build_tab_row）。
+--- v2.16.32：男频/女频挪到**胶囊行最左**（见 library_chips）—— tab 只留导航
+--- （去别的地方），频道是筛选维度、留在筛选区。
 local function library_tabs(plugin, menu)
     local st = menu._store_state or {}
     return {
-        { text = _("男频"), active = st.gender == Store.GENDER.male,
-          on_tap = function() switch_library_gender(plugin, menu, Store.GENDER.male) end },
-        { text = _("女频"), active = st.gender == Store.GENDER.female,
-          on_tap = function() switch_library_gender(plugin, menu, Store.GENDER.female) end },
-        -- 「分类…」**不进 tab**：分类是**筛选条件**不是目的地，压平后 150+ 条弹在 tab 上太重
-        -- —— 它在 tab 正下方的**筛选行**里（「分类：全部 ▾」），选完列表原地刷新。
         -- ⚠️ 本行的「榜单」是**导航**：不传 menu ⇒ 开一个新菜单，返回键能回到书库；
         --    榜单菜单筛选行里的「榜单 ▾」才是**原地换榜**（传 menu，同一栈位）。
         --    这两条语义是分开的，别合并。
@@ -1618,65 +1642,87 @@ end
 --- 不传 ⇒ 开新菜单（书库 tab 栏的「榜单」是**导航**，返回时应回到书库，不能原地顶掉它）。
 function StoreUI.showStoreRanks(self, menu)
     local plugin = self
-    local entries = {
-        { separator = true, text = _("── 网页榜单 ──") },
-        { text = _("最近更新"), callback = function() open_rank(plugin, "rank_recent", _("最近更新"), menu) end },
-        { text = _("推荐榜"), callback = function() open_rank(plugin, "rank_recommend", _("推荐榜"), menu) end },
-        -- 巅峰榜（首页同款）：固定 30 本全站总榜，明文书名 + 封面（v2.16.0）
-        { text = _("巅峰榜"), callback = function() open_rank(plugin, "rank_top", _("巅峰榜"), menu) end },
-        -- 原创榜（番茄原创作品榜）：男频/女频 × 阅读榜/新书榜，各自再选分类。
-        -- 点击进入后先选榜别，再选分类 —— 省掉一层「性别」是因为榜名自带了性别。
-        { text = Store.gender_label(Store.GENDER.male) .. _("原创榜"), callback = function()
-            StoreView.show_chooser{
-                title = T(_("%1 · 原创榜"), Store.gender_label(Store.GENDER.male)),
-                entries = {
-                    { text = _("阅读榜"), callback = function()
-                        open_rank_categories(plugin, Store.GENDER.male, Store.RANK_MOLD.read, menu) end },
-                    { text = _("新书榜"), callback = function()
-                        open_rank_categories(plugin, Store.GENDER.male, Store.RANK_MOLD.new, menu) end },
-                },
-            }
-        end },
-        { text = Store.gender_label(Store.GENDER.female) .. _("原创榜"), callback = function()
-            StoreView.show_chooser{
-                title = T(_("%1 · 原创榜"), Store.gender_label(Store.GENDER.female)),
-                entries = {
-                    { text = _("阅读榜"), callback = function()
-                        open_rank_categories(plugin, Store.GENDER.female, Store.RANK_MOLD.read, menu) end },
-                    { text = _("新书榜"), callback = function()
-                        open_rank_categories(plugin, Store.GENDER.female, Store.RANK_MOLD.new, menu) end },
-                },
-            }
-        end },
-    }
 
-    -- App 榜单：直接由目录生成（新增榜只要往 Store.APP_RANKS 里加一行）
+    -- v2.16.32：入口改**两级** —— 第一级只列分组（5 行扫得过来），第二级才是
+    -- 该组的榜单。旧版 30+ 条平铺（网页榜 3 + 原创榜 2 + 男频 11 + 出版 6 +
+    -- 礼物 4，中间隔着 5 条分隔头），用户原话「乱七八糟」。
+    -- 🔴 每组一个独立 chooser：条目少走弹窗（show_chooser 自动分派），且
+    --    close_chooser 防叠加，两级不会叠屏。
     local groups = {
-        { id = "male", header = _("── 男频榜单 ──") },
-        { id = "pub", header = _("── 出版物榜单 ──") },
-    }
-    for _i, g in ipairs(groups) do
-        entries[#entries + 1] = { separator = true, text = g.header }
-        for _j, r in ipairs(Store.APP_RANKS) do
-            if r.group == g.id then
+        { text = _("网页榜单"), build = function()
+            return {
+                { text = _("最近更新"), callback = function() open_rank(plugin, "rank_recent", _("最近更新"), menu) end },
+                { text = _("推荐榜"), callback = function() open_rank(plugin, "rank_recommend", _("推荐榜"), menu) end },
+                -- 巅峰榜（首页同款）：固定 30 本全站总榜，明文书名 + 封面（v2.16.0）
+                { text = _("巅峰榜"), callback = function() open_rank(plugin, "rank_top", _("巅峰榜"), menu) end },
+            }
+        end },
+        { text = _("原创榜"), build = function()
+            -- 原创榜（番茄原创作品榜）：性别 × 阅读榜/新书榜，进榜后再选分类。
+            -- 旧版在这里还要再弹一层「性别 → 榜别」，现在直接拍平成 4 项。
+            local items = {}
+            for _i, g in ipairs({ Store.GENDER.male, Store.GENDER.female }) do
+                for _j, m in ipairs({ Store.RANK_MOLD.read, Store.RANK_MOLD.new }) do
+                    local gender, mold = g, m
+                    items[#items + 1] = {
+                        text = Store.gender_label(gender) .. Store.rank_mold_label(mold),
+                        callback = function()
+                            open_rank_categories(plugin, gender, mold, menu)
+                        end,
+                    }
+                end
+            end
+            return items
+        end },
+        { text = _("男频榜单"), build = function()
+            local items = {}
+            for _i, r in ipairs(Store.APP_RANKS) do
+                if r.group == "male" then
+                    local label = _(r.label)
+                    items[#items + 1] = {
+                        text = label,
+                        callback = function() open_rank_app(plugin, "rank_app", r.key, label, menu) end,
+                    }
+                end
+            end
+            return items
+        end },
+        { text = _("出版榜单"), build = function()
+            local items = {}
+            for _i, r in ipairs(Store.APP_RANKS) do
+                if r.group == "pub" then
+                    local label = _(r.label)
+                    items[#items + 1] = {
+                        text = label,
+                        callback = function() open_rank_app(plugin, "rank_app", r.key, label, menu) end,
+                    }
+                end
+            end
+            return items
+        end },
+        { text = _("礼物榜"), build = function()
+            local items = {}
+            for _i, r in ipairs(Store.APP_PRAISE) do
                 local label = _(r.label)
-                entries[#entries + 1] = {
+                items[#items + 1] = {
                     text = label,
-                    callback = function() open_rank_app(plugin, "rank_app", r.key, label, menu) end,
+                    callback = function() open_rank_app(plugin, "rank_praise", r.key, label, menu) end,
                 }
             end
-        end
-    end
+            return items
+        end },
+    }
 
-    entries[#entries + 1] = { separator = true, text = _("── 礼物榜 ──") }
-    for _i, r in ipairs(Store.APP_PRAISE) do
-        local label = _(r.label)
+    local entries = {}
+    for _i, g in ipairs(groups) do
         entries[#entries + 1] = {
-            text = label,
-            callback = function() open_rank_app(plugin, "rank_praise", r.key, label, menu) end,
+            text = g.text,
+            callback = function()
+                local items = g.build()
+                StoreView.show_chooser{ title = g.text, entries = items }
+            end,
         }
     end
-
     StoreView.show_chooser{ title = _("排行榜"), entries = entries }
 end
 

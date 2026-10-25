@@ -1208,6 +1208,17 @@ local function show_chooser_menu(opts, entries)
     }
     StoreView._chooser = menu
     UIManager:show(menu)
+    -- 🔴 锚点定位（v2.16.32）：树状分类折叠行「点开 = 关掉重开选择器」，重开后
+    --    Menu 从第 1 页显示 —— 用户刚点的那组跑到看不见的地方，得重新往下翻
+    --    （用户报「展开直接页码重置为开始了」）。翻到锚点条目所在页即可。
+    --    在 show() 之后调 onGotoPage：它只 updateItems，不影响首次绘制。
+    local anchor = tonumber(opts.anchor_index) or 0
+    if anchor > 0 and menu.onGotoPage and menu.getPageNumber then
+        pcall(function()
+            local page = menu:getPageNumber(anchor)
+            if page and page > 1 then menu:onGotoPage(page) end
+        end)
+    end
     return menu
 end
 
@@ -1223,6 +1234,14 @@ function StoreView.show_chooser(opts)
     StoreView.close_chooser()
 
     local entries = opts.entries or {}
+
+    -- 条目自带 anchor 标记（树状分类的折叠组头）⇒ 换算成行号传下去（见
+    -- show_chooser_menu 的锚点定位注释）。
+    if not opts.anchor_index then
+        for i, e in ipairs(entries) do
+            if e.anchor then opts.anchor_index = i break end
+        end
+    end
 
     -- 分组分隔头是**长列表**的结构标记（没有它 150+ 条就是一串扫不动的东西）
     -- ⇒ 带分隔头的一律走全屏菜单，不吃条目数阈值。
