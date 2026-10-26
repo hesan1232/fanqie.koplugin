@@ -45,6 +45,10 @@ local defaults = {
         -- 等于每次开段评都重下一遍。默认 7 天（与 cover_cache.lua 的
         -- AVATAR_TTL_DEFAULT 同口径）：档位 1 / 3 / 7 / 30 天 / 永久。
         avatar_ttl_minutes = 10080,
+        -- 评论区无图模式（v2.16.36）：勾选后段评**不下载、不渲染**头像与图片，
+        -- 只留文字（弱网 / 省流量 / 只想快速翻文字时用）。不删已有缓存 ——
+        -- 取消勾选后已下过的图立刻回来，没下过的按需重下。
+        comment_no_image = false,
         download_underlines_and_thoughts = false,
         show_annotations = true,
         max_size_mb = 1024,
@@ -760,6 +764,27 @@ function Settings:set_avatar_ttl_minutes(n)
     local cache = self:get("cache")
     if type(cache) ~= "table" then cache = {} end
     cache.avatar_ttl_minutes = n
+    self:set("cache", cache)
+    self:flush()
+end
+
+-- ===== 评论区无图模式（v2.16.36） =====
+-- 勾选后段评**不下载、不渲染**头像与图片（判定单点在 main.lua 的 comment_no_image）。
+-- 放 cache 段：与「下载图片」「评论图片有效期」同处，config.lua 也能一起配；
+-- 写走 set_cache_pref ⇒ 标记「用户显式设置」，apply_config 不会覆盖。
+function Settings:get_comment_no_image()
+    local cache = self:get("cache")
+    return type(cache) == "table" and cache.comment_no_image == true or false
+end
+
+function Settings:set_comment_no_image(on)
+    if self.set_cache_pref then
+        self:set_cache_pref("comment_no_image", on == true)
+        return
+    end
+    local cache = self:get("cache")
+    if type(cache) ~= "table" then cache = {} end
+    cache.comment_no_image = on == true
     self:set("cache", cache)
     self:flush()
 end

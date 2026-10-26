@@ -265,7 +265,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.35",
+    version = Info and Info.version or "2.16.36",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -1044,7 +1044,9 @@ end
 -- 图片提示行：TextViewer 画不了图，只能把「有几张、哪几张能看」写进文本。
 -- 不可显示的必须显式说明 —— 否则用户点开是空白，会以为插件坏了。
 -- （HEIC 现在会先试着转码成 WebP，转不了才落到这里）
-local function comment_image_note(list)
+local function comment_image_note(list, no_image)
+    -- 无图模式（v2.16.36）：回退路径也不提图片（正文里一行都不许剩）。
+    if no_image then return nil end
     local n_ok, n_bad, bad_fmt = 0, 0, {}
     for _i, im in ipairs(list) do
         if im.displayable then
@@ -1071,7 +1073,7 @@ end
 
 -- 一条顶层段评 → 文本行（含已展开的回复树）。
 -- expanded 为 nil 表示收起；否则为 { roots = 树, has_more = bool, total = n }。
-local function append_comment_lines(number, comment, expanded)
+local function append_comment_lines(number, comment, expanded, no_image)
     local user = tostring(comment.user_name or comment.username or _("匿名"))
     local likes = tonumber(comment.digg_count or comment.like_count) or 0
     local replies = tonumber(comment.reply_count) or 0
@@ -1097,7 +1099,7 @@ local function append_comment_lines(number, comment, expanded)
     elseif replies > 0 then
         out[#out + 1] = T(_("展开 %1 条回复"), tostring(replies))
     end
-    local note = comment_image_note(comment_images(comment))
+    local note = comment_image_note(comment_images(comment), no_image)
     if note then
         out[#out + 1] = note
     end
@@ -1246,6 +1248,17 @@ local function comment_image_fresh(plugin, path)
     return CoverCache.is_fresh_minutes(path, s:get_comment_image_ttl_minutes())
 end
 
+--- 评论区无图模式（v2.16.36）：勾选后段评**不下载、不渲染**头像与图片，只留文字。
+--- 🔴 这个判断**只允许**有这一处：头像与正文图分别在 comment_avatar_entry /
+---    view_image_entries 的开头短路，两处都靠它。散落成「直读 cache 里那个键」
+---    会在测试桩里漏判（回归里连着「不下载」一起压）。
+---    设置读不到（老版本 settings / 桩）时当**关闭**：默认行为不变。
+local function comment_no_image(plugin)
+    local s = plugin and plugin.settings
+    if not (s and type(s.get_comment_no_image) == "function") then return false end
+    return s:get_comment_no_image() == true
+end
+
 --- 头像缓存还能用吗：**与段评图分开的 TTL**（v2.16.35，默认 7 天）。
 --- 头像按 user_id 命名、同一个用户在几十条评论里反复出现，但它几乎不换；跟着
 --- 段评图的 60 分钟走，等于每次开段评都把这批小图重下一遍（白耗流量 + 首屏多等）。
@@ -1266,6 +1279,9 @@ end
 --- 没有头像 / 转不了（白名单外的 passport 域 + 真 HEIC）→ 只给首字，不报错：
 --- 头像缺失不该在评论区里刷一行「图片无法显示」。
 local function comment_avatar_entry(plugin, owner, missing)
+    -- 无图模式：**连首字占位都不给** —— 头像槽整个不占位，正文把那 26px 收回去
+    -- （只给首字的话用户会以为头像加载失败，来回找开关）。
+    if comment_no_image(plugin) then return nil end
     local name = tostring(owner.user_name or "")
     local letter = "·"
     if name ~= "" and util and util.splitToChars then
@@ -1302,6 +1318,10 @@ end
 --    落不到同一张表上。所以回复里的图**不给 tap**（与回退路径只给顶层图按钮一致）。
 --    `tap` 载荷 = { no = 顶层评论序号, img = 图片在 comment_images() 里的下标 }。
 local function view_image_entries(plugin, owner, owner_no, allow_tap)
+    -- 无图模式：一条图片条目都不产出（既没有内嵌图，也没有「正在后台加载…」行），
+    -- missing 为空 ⇒ 预取（_prefetchParaImages）根本不会启动 ⇒ **不下载**。
+    -- 也不产出「本设备无法显示」的说明：无图模式下用户不想听到图片的事。
+    if comment_no_image(plugin) then return {}, {} end
     local entries, missing = {}, {}
     local list = comment_images(owner)
     for k, im in ipairs(list) do
@@ -1838,6 +1858,10 @@ function FanQiePlugin:_renderParaReviewView(in_place)
     if total_pages then
         viewer_title = viewer_title .. T(_(" 第%1/%2页"), tostring(page), tostring(total_pages))
     end
+    -- 无图模式：标题带一句，否则用户看到「图都不见了」会以为加载失败（v2.16.36）
+    if comment_no_image(self) then
+        viewer_title = viewer_title .. " · " .. _("无图模式")
+    end
 
     local need_prefetch = #all_missing > 0
     if in_place and viewer_is_shown(self._para_viewer) and self._para_viewer.refresh then
@@ -1884,6 +1908,9 @@ end
 -- [兜底渲染器] TextViewer 纯文本版：CommentView（fanqie/comment_view.lua）加载
 -- 失败时使用。文案口径与新视图一致，但没有内嵌图片（只有【图片】提示行）。
 function FanQiePlugin:_renderParaReviewText(in_place)
+    -- 无图模式（v2.16.36）：本函数是 CommentView 加载失败时的兜底，图片本来就只
+    -- 有【图片】提示行 + 「图N·k」按钮，这里一并省掉（口径与主路径一致）。
+    local no_image = comment_no_image(self)
     local state = self._para_view_state
     if not state then return end
     local comments = state.comments
@@ -1906,7 +1933,8 @@ function FanQiePlugin:_renderParaReviewText(in_place)
                 total = tonumber(rs and rs.total) or 0,
             }
         end
-        text_parts[#text_parts + 1] = table.concat(append_comment_lines(i, comment, expanded), "\n")
+        text_parts[#text_parts + 1] = table.concat(
+            append_comment_lines(i, comment, expanded, no_image), "\n")
 
         if cid then
             local n = tonumber(comment.reply_count) or 0
@@ -1936,16 +1964,19 @@ function FanQiePlugin:_renderParaReviewText(in_place)
         -- 段评图片：每张「可显示」的图一个按钮。
         -- 不可显示的（HEIC）**不给按钮**，理由已写进正文的图片提示行，
         -- 免得按钮点下去只能弹一句"打不开"。
-        for _k, im in ipairs(comment_images(comment)) do
-            if im.displayable then
-                local index_ref2 = state.index
-                local no2, kn2 = i, _k
-                reply_buttons[#reply_buttons + 1] = {
-                    text = T(_("图%1·%2"), tostring(i), tostring(_k)),
-                    callback = function()
-                        self:showCommentImage(index_ref2, no2, kn2)
-                    end,
-                }
+        -- 无图模式（v2.16.36）：连「图N·k」按钮都不给（正文提示行也一起省了）。
+        if not no_image then
+            for _k, im in ipairs(comment_images(comment)) do
+                if im.displayable then
+                    local index_ref2 = state.index
+                    local no2, kn2 = i, _k
+                    reply_buttons[#reply_buttons + 1] = {
+                        text = T(_("图%1·%2"), tostring(i), tostring(_k)),
+                        callback = function()
+                            self:showCommentImage(index_ref2, no2, kn2)
+                        end,
+                    }
+                end
             end
         end
     end
@@ -2022,6 +2053,10 @@ function FanQiePlugin:_renderParaReviewText(in_place)
         or _("段评")
     if total_pages then
         viewer_title = viewer_title .. T(_(" 第%1/%2页"), tostring(page), tostring(total_pages))
+    end
+    -- 无图模式：标题带一句，否则用户看到「图都不见了」会以为加载失败（v2.16.36）
+    if comment_no_image(self) then
+        viewer_title = viewer_title .. " · " .. _("无图模式")
     end
 
     local text = table.concat(text_parts, "\n\n")
@@ -2543,6 +2578,22 @@ function FanQiePlugin:getSettingsMenuItems()
                 -- 已有缓存章节在打开时会自动按新开关升级/回退吗？不会 —— 升级只做
                 -- 「补齐」，不删已有的整段锚点。所以这里提示一句，避免用户以为没生效。
                 self:showInfo(_("已保存。新打开（或重新下载）的章节生效。"), 2)
+            end,
+        },
+        {
+            -- v2.16.36：勾选后段评**不下载、不渲染**头像与图片，只留文字。
+            -- 换段/重新打开才生效（已渲染的视图不重排）；不删缓存。
+            text = _("评论区无图模式"),
+            help_text = _("段评只显示文字：不下载也不显示头像和图片（省流量 / 弱网）"),
+            checked_func = function()
+                return self.settings:get_comment_no_image()
+            end,
+            keep_menu_open = true,
+            callback = function()
+                local on = not self.settings:get_comment_no_image()
+                self.settings:set_comment_no_image(on)
+                self:showInfo(on and _("已开启评论区无图模式（重新打开段评生效）")
+                    or _("已关闭评论区无图模式"), 2)
             end,
         },
         {
