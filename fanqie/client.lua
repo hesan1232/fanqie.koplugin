@@ -695,9 +695,11 @@ function Client:fetch_shelf_detail(force_refresh)
     local progress_map = {}
     if progress_result and progress_result.data then
         for _, item in ipairs(progress_result.data) do
+            -- 🔴 index 不是章序（2026-10-26 实测：89 条里 74 条恒 0，同一本书
+            --    item_id 不变 index 也会从 51 漂到 0）—— 不把它带进书架记录，
+            --    防下游拿它当「已读章数」；定位与展示只用 item_id + read_progress。
             progress_map[tostring(item.book_id)] = {
                 read_progress = item.read_progress,
-                index = item.index,
                 item_id = item.item_id,
                 -- read_timestamp 是服务端给的最后阅读时间（unix 秒），
                 -- 书架「按最后阅读」排序即用它（与 kindle-forge 前端同款）。
@@ -722,7 +724,6 @@ function Client:fetch_shelf_detail(force_refresh)
             local progress = progress_map[key]
             if progress then
                 book.read_progress = progress.read_progress
-                book.index = progress.index
                 book.latest_read_item_id = progress.item_id
             end
             book.read_timestamp = progress and progress.read_timestamp or 0
@@ -751,6 +752,8 @@ function Client:fetch_read_progress()
 end
 
 function Client:update_read_progress(book_id, item_id, index, progress)
+    -- ⚠️ index 按请求形状照传（App 的 UpdateProgressRequest 也带），但服务端
+    --    并不以它为准（读侧实测 index 会自己漂移）—— 真正的进度锚点是 item_id。
     return self:post_json(FanQie.update_progress_url(), {
         book_id = book_id,
         item_id = item_id,

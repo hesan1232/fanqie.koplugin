@@ -93,13 +93,23 @@ function BookDetail.update_status_label(d, now)
 end
 
 --- 剩余未读章数 = 总章数 − 已读章数（没读过就整本未读）。
--- 已读章数优先 `real_chapter_order`（multidetail 直接给的「读到第几章」），
--- 退回进度接口的 `index`。两者都拿不到 → 认为一章未读。
+-- 已读章数优先 `real_chapter_order`（multidetail 直接给的「读到第几章」）；
+-- 拿不到时用 read_progress（服务端算的万分比整书进度）× 总章数**估算**。
+-- 🔴 进度接口的 index 不能当已读章数（2026-10-26 实测：89 条里 74 条恒 0，
+--    同一本书 item_id 不变 index 也会从 51 漂到 0）—— 旧版拿它兜底，
+--    有阅读进度的书会显示「整本未读」。
 -- @return number, boolean 剩余未读, 是否有已读记录
-function BookDetail.unread_count(serial_count, real_chapter_order, progress_index)
+function BookDetail.unread_count(serial_count, real_chapter_order, read_progress)
     local total = num(serial_count) or 0
     local read = num(real_chapter_order)
-    if not read or read <= 0 then read = num(progress_index) end
+    if not read or read <= 0 then
+        local rp = num(read_progress)
+        if rp and rp > 0 and total > 0 then
+            read = math.floor(rp / 10000 * total + 0.5)
+            if read < 1 then read = 1 end
+            if read > total then read = total end
+        end
+    end
     local has_read = (read ~= nil and read > 0)
     if total <= 0 then return 0, has_read end
     local left = total - (read or 0)
@@ -279,8 +289,7 @@ function BookDetail.lines(book, opts)
     end
 
     local left = BookDetail.unread_count(
-        serial, book.real_chapter_order or book.read_chapters,
-        book.index or book.progress_index)
+        serial, book.real_chapter_order or book.read_chapters, book.read_progress)
     if serial and serial > 0 then
         push(_("剩余未读："), T(_("%1 章"), tostring(left)))
     end

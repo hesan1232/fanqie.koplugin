@@ -383,12 +383,17 @@ function Bookshelf:get_shelf(force_refresh)
     if type(shelf) == "table" then
         for _, item in ipairs(shelf) do
             local total_chapters = tonumber(item.serial_count or item.total_chapters or 0)
-            local read_chapters = tonumber(item.real_chapter_order or item.index or 0)
+            -- 🔴 已读章数只信 real_chapter_order（multidetail 直接给）；进度接口的
+            --    index 不是章序（74/89 恒 0、还会漂移），不再兜底。进度百分比：
+            --    有真实章数比例用比例，否则用 read_progress（服务端算的万分比整书进度）
+            --    —— 旧逻辑 index=0 时会把「有进度的书」显示成 0%。
+            local read_chapters = tonumber(item.real_chapter_order) or 0
+            local rp = tonumber(item.read_progress) or 0
             local progress = 0
-            if total_chapters and total_chapters > 0 then
+            if read_chapters > 0 and total_chapters > 0 then
                 progress = read_chapters / total_chapters
-            elseif item.read_progress then
-                progress = tonumber(item.read_progress) / 10000
+            elseif rp > 0 then
+                progress = rp / 10000
             end
             -- 封面：接口给的是**签名** URL（x-expires 只到次日，过期回源 403），
             -- 经 FanQie.mobile_cover 收敛成无签名 CDN 地址（幂等）。
