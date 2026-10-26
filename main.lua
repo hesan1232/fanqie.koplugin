@@ -3237,6 +3237,83 @@ function FanQiePlugin:showBookDetailPage(book, opts)
     UIManager:show(page)
 end
 
+--- 相关推荐列表（书籍详情按钮框的「相关推荐」入口）。
+-- 数据源：GET /reading/reader/recommend/book/（App readerapi，2026-10-26 实测
+-- 匿名设备可用；报告 §7.1 的 related_book 恒 show=false、§7.2 的
+-- lastpage/recommend 报 100201，都是门控，接不了）。
+-- offset 真分页（相邻两页零重叠）；「换一批」= offset += page_size。
+function FanQiePlugin:showRelatedBooks(book, offset)
+    if type(book) ~= "table" or not book.book_id then return end
+    if not self:checkNetwork() then return end
+    offset = math.max(math.floor(tonumber(offset) or 0), 0)
+    local PAGE = 10
+    local client = self.client
+    self:showBusy(_("正在获取相关推荐..."))
+    Async.run(function()
+        local list, rerr = client:official_recommend_books(book.book_id, PAGE, offset)
+        if not list then error(rerr or "获取失败", 0) end
+        return list
+    end, function(ok, list, rerr)
+        self:closeBusy()
+        if not ok or type(list) ~= "table" then
+            self:showError(T(_("获取相关推荐失败:\n%1"), display_error(rerr or list)))
+            return
+        end
+        self:_displayRelatedBooks(book, list, offset, PAGE)
+    end)
+end
+
+--- 渲染相关推荐列表（全屏 Menu；点条目递归开该书详情框，尾部「换一批」）。
+function FanQiePlugin:_displayRelatedBooks(src_book, list, offset, page_size)
+    local rows = BookDetail.related_rows(list, src_book.book_id)
+    if #rows == 0 then
+        self:showInfo(_("暂无相关推荐"))
+        return
+    end
+    local items = {}
+    for _, row in ipairs(rows) do
+        local rec = row.book
+        items[#items + 1] = {
+            text = row.text,
+            mandatory = row.mandatory,
+            callback = function()
+                -- 先关列表再开详情框，避免叠层
+                if _state.active_menu then
+                    UIManager:close(_state.active_menu)
+                    _state.active_menu = nil
+                end
+                self:buildBookDetailDialog(rec, {})
+            end,
+        }
+    end
+    items[#items + 1] = {
+        text = "── " .. _("换一批") .. " ──",
+        callback = function()
+            if _state.active_menu then
+                UIManager:close(_state.active_menu)
+                _state.active_menu = nil
+            end
+            self:showRelatedBooks(src_book, offset + page_size)
+        end,
+    }
+    local menu
+    menu = Menu:new{
+        title = T(_("相关推荐 · %1"), tostring(src_book.title
+            or src_book.book_name or "")),
+        item_table = items,
+        items_per_page = 10,
+        is_borderless = true,
+        is_popout = false,
+        close_callback = function()
+            if _state.active_menu == menu then
+                _state.active_menu = nil
+            end
+        end,
+    }
+    _state.active_menu = menu
+    UIManager:show(menu)
+end
+
 --- 组装「书籍详情」按钮框（书架 / 书城共用）。
 -- ⚠️ 一律走 `title` 显示摘要：`info_text` 是死键（见本节开头）。
 --@param book table
@@ -3352,6 +3429,15 @@ function FanQiePlugin:buildBookDetailDialog(book, opts)
             end,
         } }
     end
+
+    rows[#rows + 1] = { {
+        text = _("相关推荐"),
+        callback = function()
+            self:closeBookDetailPage()
+            self:_closeDetailDialog()
+            self:showRelatedBooks(book)
+        end,
+    } }
 
     rows[#rows + 1] = { {
         text = _("关闭"),

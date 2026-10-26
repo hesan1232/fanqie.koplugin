@@ -942,6 +942,43 @@ function Client:official_get_para_replies(comment_id, opts)
     }
 end
 
+-- 相关推荐（官方 App readerapi）。GET /reading/reader/recommend/book/
+-- 2026-10-26 实测（.workbuddy/tools/_probe_related_book.py）：匿名设备即可用，
+-- data **直接是 ApiBookInfo 数组**（book_id/book_name/author/category/
+-- creation_status/word_number/score/book_abstract_v2/thumb_url…）。
+-- offset 是真分页（offset 0/10 两页零重叠）；越界 offset 服务端仍回 10 条
+-- （当作重新推荐），所以没有 hasMore，翻到空页即停。
+-- 🔴 报告《番茄小说评论区头衔渲染分析报告.md》§7.1 的 detail/related_book
+--    （恒 show=false）与 §7.2 的 lastpage/recommend（100201）对匿名设备
+--    **不下发数据** —— 那两个是登录/实验门控，别照报告直接接。
+function Client:official_recommend_books(book_id, book_num, offset)
+    local Reading = require("fanqie.reading")
+    local Device = require("fanqie.reading.device")
+    local Crypto = require("fanqie.reading.crypto")
+    local device, derr = Device.ensure(self, self.settings)
+    if not device then
+        return nil, derr or "设备身份注册失败"
+    end
+    local n = math.min(math.max(math.floor(tonumber(book_num) or 10), 1), 50)
+    local off = math.max(math.floor(tonumber(offset) or 0), 0)
+    local function query(d, ts_ms)
+        local q = Crypto.build_common_query(d, ts_ms)
+        q.book_id = tostring(book_id)
+        q.book_num = tostring(n)
+        q.offset = tostring(off)
+        return q
+    end
+    local data, err = Reading.signed_call(self, "recommend_book", device,
+        "/reading/reader/recommend/book/", query, nil)
+    if not data then
+        return nil, err
+    end
+    if type(data.data) ~= "table" then
+        return nil, "推荐列表响应缺少 data"
+    end
+    return data.data
+end
+
 -- Fetch chapter content (official App protocol only).
 -- opts: { review = bool }  -- 是否启用段评模式
 -- 返回 result（单值）。多书源下线后不再有 source_id，也没有需要跨子进程合并的

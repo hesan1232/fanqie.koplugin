@@ -117,6 +117,74 @@ function BookDetail.unread_count(serial_count, real_chapter_order, read_progress
     return left, has_read
 end
 
+--- /reading/reader/recommend/book/ 的单条 ApiBookInfo → 详情框可用的书记录。
+-- 🔴 字段名是 snake_case（实测 2026-10-26，.workbuddy/tools/_probe_related_book.py）：
+--    book_id / book_name / book_abstract_v2 / word_number / creation_status…
+--    thumb_url 是签名 HEIC（墨水屏不渲染封面，不取）。
+-- @param item table ApiBookInfo（可为 nil）
+-- @return table|nil { book_id, title, book_name, author, abstract, serial_status, meta }
+function BookDetail.related_item(item)
+    if type(item) ~= "table" then return nil end
+    local book_id = tostring(item.book_id or "")
+    if book_id == "" then return nil end
+    local title = item.book_name or item.book_short_name
+    if type(title) ~= "string" or title == "" then return nil end
+
+    -- 状态：creationStatus 0=完结 1=连载（报告 §7.1）
+    local cs = tonumber(item.creation_status)
+    local status = (cs == 1 and _("连载中")) or (cs == 0 and _("已完结")) or nil
+
+    -- meta 短行：作者 · 分类 · 字数 · 评分 · 状态（空的跳过）
+    local meta = {}
+    local function push(v) 
+        if type(v) == "string" and v ~= "" then meta[#meta + 1] = v end
+    end
+    push(item.author)
+    push(item.category)
+    local wn = tonumber(item.word_number) or 0
+    if wn >= 10000 then
+        meta[#meta + 1] = string.format("%.1f%s", wn / 10000, _("万字"))
+    elseif wn > 0 then
+        meta[#meta + 1] = string.format("%d%s", wn, _("字"))
+    end
+    if type(item.score) == "string" and item.score ~= "" then
+        meta[#meta + 1] = T(_("评分 %1"), item.score)
+    end
+    push(status)
+    -- 排除自身（调用方再按 book_id 兜一道，这里只管单条归一）
+
+    return {
+        book_id = book_id,
+        title = title,
+        book_name = title,
+        author = item.author,
+        abstract = item.book_abstract_v2 or item.abstract or item.book_abstract,
+        serial_status = status,
+        meta = table.concat(meta, " · "),
+    }
+end
+
+--- 推荐列表 → Menu 条目数组（排除基准书自己；全被排除 → 空数组）。
+-- @param list table ApiBookInfo 数组
+-- @param exclude_book_id string|nil 基准书 ID（推荐里常含同书）
+-- @return table { { book=记录, text=书名, mandatory=meta } … }
+function BookDetail.related_rows(list, exclude_book_id)
+    local out = {}
+    if type(list) ~= "table" then return out end
+    local want = exclude_book_id and tostring(exclude_book_id) or nil
+    for _i, item in ipairs(list) do
+        local rec = BookDetail.related_item(item)
+        if rec and rec.book_id ~= want then
+            out[#out + 1] = {
+                book = rec,
+                text = rec.title,
+                mandatory = rec.meta,
+            }
+        end
+    end
+    return out
+end
+
 --- unix 秒 → "YYYY-MM-DD HH:MM"；<=0 / nil / 非法 → nil（调用方据此跳过该行）
 function BookDetail.fmt_datetime(ts)
     local n = num(ts)
