@@ -232,59 +232,98 @@ Comments.MAX_TITLES = 3
 -- 🔴 布尔标签补齐（v2.16.32）：App 会渲染「官方」「小编」徽标而旧版没显示 ——
 --    `is_official_cert` → 「官方」、`is_cp` → 「小编」；`is_vip`/`is_blue_vip`
 --    在 App 里都是图标，文字渲染跳过（否则满屏［VIP］比 vip 头衔还吵）。
---    顺序对齐 App：作者 > 官方 > 小编 > 头衔 > 装扮。
+--
+-- 🔴 顺序与去重对齐《番茄小说-开源阅读书源.json》（v2.16.35）：
+--    该书源 jsLib 的 `fqCommentTags()` 是同一份协议的另一份成熟实现，它给出的
+--    优先级是 **身份徽标 → 头衔 → 粉丝榜 → 作者赞过 → 挂件**，并且有三个容易被
+--    漏掉的判定：
+--      1. 官方/小编 与 作者 是**互斥**的身份徽标（if/elseif）—— 不能既打「作者」
+--         又打「官方」，一条评论的头部只认一个身份；
+--      2. 本书作者走 `pushTitles(true)`：把 `is_author_title` 的条目从「头衔流」
+--         里**剔除**（它内容通常就是「作家」），否则会出现「［作者］［作家］」
+--         这种同义重复 —— 这是旧版真实存在的观感问题；
+--      3. 粉丝榜只在 `fan_rank_num` 属于 1..100 且 `fan_ranklist_title` 非空时才
+--         成文字（App 里是带名次的彩底徽标，墨水屏只取文案）。
+--    「作者赞过」三个来源（`user_action.author` / `has_author_digg` /
+--    `author_digg_time`）由 flatten 归一成 `author_digg` 传进来；本书作者自己
+--    发的段评不标它（书源同样把 digg 按 `is_author !== true` 过滤）。
 --
 -- @param tag table user_info.user_tag（可为 nil）
+-- @param author_digg boolean|number|nil 「作者赞过」标记（见 flatten_comment）
 -- @return table 字符串数组（保持接口给的顺序，已去重，最多 MAX_TITLES 个）
-function Comments.titles_of(tag)
+function Comments.titles_of(tag, author_digg)
     local out = {}
     if type(tag) ~= "table" then return out end
 
-    local seen = {}
-    local function push(name)
-        if type(name) ~= "string" then return false end
-        name = name:match("^%s*(.-)%s*$")
-        if name == "" or seen[name] then return false end
-        seen[name] = true
-        out[#out + 1] = name
-        return #out >= Comments.MAX_TITLES
+    -- `_` 是 KOReader 的全局 gettext。本模块刻意不在顶层 require gettext
+    -- （保持「纯数据模块可离线单测」），取不到就原样返回中文。
+    local function tr(s)
+        if type(_) == "function" then return _(s) end
+        return s
     end
 
-    if tag.is_official_cert == true then
-        if push(_("官方")) then return out end
-    end
-    if tag.is_cp == true then
-        if push(_("小编")) then return out end
+    local seen = {}
+    local full = false
+    local function add(name)
+        if full or type(name) ~= "string" then return end
+        name = name:match("^%s*(.-)%s*$")
+        if name == "" or seen[name] then return end
+        seen[name] = true
+        out[#out + 1] = name
+        if #out >= Comments.MAX_TITLES then full = true end
     end
 
     local list = tag.user_title_info
-    if type(list) == "table" then
-        local full = false
-        for _i, t in ipairs(list) do
-            if type(t) == "table" and t.is_vip_title == true then
-                -- VIP 头衔是图标语义，文字渲染跳过（见函数头注释）
-            elseif push(type(t) == "table" and t.zh_title or nil) then
-                full = true
-                break
-            end
+    -- `skip_author_title` = 本书作者分支：把「作家」这类身份头衔剔出去（去重）
+    local function add_titles(skip_author_title)
+        if type(list) ~= "table" then return end
+        local used = 0
+        local function one(t)
+            if full or type(t) ~= "table" then return end
+            if t.is_vip_title == true then return end          -- VIP 是图标语义
+            if skip_author_title and t.is_author_title == true then return end
+            local before = #out
+            add(t.zh_title)
+            if #out > before then used = used + 1 end
         end
-        -- JSON 解码器把数组映成数组表时 ipairs 就够；万一拿到的是「数字键的
-        -- 对象表」（部分解码器/服务端会把空数组写成 {}）则退回 pairs。
-        if not full and #out == 0 and next(list) ~= nil then
-            for _k, t in pairs(list) do
-                if type(t) == "table" and t.is_vip_title == true then
-                    -- 同上：VIP 图标跳过
-                elseif push(type(t) == "table" and t.zh_title or nil) then
-                    break
-                end
-            end
+        for _i, t in ipairs(list) do one(t) end
+        -- 万一拿到的是「数字键的对象表」（部分解码器/服务端把空数组写成 {}），
+        -- ipairs 一条都取不到 ⇒ 退回 pairs 再扫一遍。
+        if used == 0 and next(list) ~= nil and type(list[1]) ~= "table" then
+            for _k, t in pairs(list) do one(t) end
         end
     end
 
+    local digg = (author_digg == true or author_digg == 1) and tag.is_author ~= true
+
+    if tag.is_official_cert == true or tag.is_cp == true then
+        add(tag.is_official_cert == true and tr("官方") or tr("小编"))
+        add_titles(false)
+        if digg then add(tr("作者赞过")) end
+    elseif tag.is_author == true then
+        add(tr("作者"))
+        add_titles(true)   -- 剔除 is_author_title：防「［作者］［作家］」重复
+    else
+        add_titles(false)
+        local rank = tonumber(tag.fan_rank_num)
+        local ft = tag.fan_ranklist_title
+        if rank and rank >= 1 and rank <= 100 and type(ft) == "string" then
+            add(ft)
+        end
+        if digg then add(tr("作者赞过")) end
+    end
+
+    -- 挂件（装扮）永远排最后：它是装饰，不是身份。过期的挂件不算
+    -- （`expire_time` 秒级时间戳，-1 = 永久，缺字段按永久兜底）。
     local st = tag.sticker
     if type(st) == "table" and st.is_worn == true then
         local inner = st.sticker
-        if type(inner) == "table" then push(inner.name) end
+        if type(inner) == "table" then
+            local e = tonumber(st.expire_time)
+            if not e or e == -1 or (e > 0 and e > os.time()) then
+                add(inner.name)
+            end
+        end
     end
     return out
 end
@@ -342,15 +381,23 @@ function Comments.flatten_comment(item)
         or (type(ex.comment_stat) == "table" and ex.comment_stat or {})
     local act = type(c.user_action) == "table" and c.user_action or {}
 
+    -- 「作者赞过」的**三个**来源（书源 fqFlattenComment 同款）：user_action.author
+    -- （1/true）、顶层 has_author_digg、author_digg_time>0。
+    -- 只取 user_action 会漏掉后两种 —— 老接口只回时间戳的那种。
+    local author_digg = act.author == true or act.author == 1
+        or c.has_author_digg == true
+        or (tonumber(c.author_digg_time) or 0) > 0
+
     return {
         comment_id = c.comment_id,
         user_id = base.user_id,
         user_name = base.user_name or common.user_name,
         avatar = base.user_avatar,
         is_author = tag.is_author == true,
-        -- 头衔（纯文本数组，见 Comments.titles_of 的注释）。
-        -- 只放数据不做 i18n：显示串由 main.lua 组装（本模块不依赖 gettext）。
-        titles = Comments.titles_of(tag),
+        -- 头衔（纯文本数组，见 Comments.titles_of 的注释）。顺序已含「作者」徽标，
+        -- 显示层**不要**再补一个（会变成「［作者］［作者］」）。
+        titles = Comments.titles_of(tag, author_digg),
+        author_digg = author_digg,
         is_vip = tag.is_vip == true or tag.is_blue_vip == true,
         text = content.text or common.text or "",
         images = collect_images(content.image_data_list),
@@ -389,6 +436,10 @@ function Comments.flatten_reply(item)
         parent_reply_id = nil
     end
 
+    local author_digg = act.author == true or act.author == 1
+        or item.has_author_digg == true
+        or (tonumber(item.author_digg_time) or 0) > 0
+
     return {
         reply_id = item.reply_id,
         parent_comment_id = item.reply_to_comment_id,
@@ -399,7 +450,8 @@ function Comments.flatten_reply(item)
         user_name = base.user_name,
         avatar = base.user_avatar,
         is_author = tag.is_author == true,
-        titles = Comments.titles_of(tag),
+        titles = Comments.titles_of(tag, author_digg),
+        author_digg = author_digg,
         is_vip = tag.is_vip == true or tag.is_blue_vip == true,
         text = content.text or "",
         images = collect_images(content.image_data_list),

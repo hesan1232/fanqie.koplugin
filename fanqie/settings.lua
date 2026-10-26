@@ -40,6 +40,11 @@ local defaults = {
         -- 默认 60 分钟（与 `fanqie/cover_cache.lua` 的 COMMENT_TTL_DEFAULT 同口径）：
         -- 档位 10 / 30 / 60 / 180 分钟 / 永久。
         comment_image_ttl_minutes = 60,
+        -- 段评**头像**缓存有效期（分钟）：0 = 永不失效。与段评图分开（v2.16.35）——
+        -- 头像按 user_id 命名、同一个用户反复出现，但几乎不换，跟着 60 分钟走
+        -- 等于每次开段评都重下一遍。默认 7 天（与 cover_cache.lua 的
+        -- AVATAR_TTL_DEFAULT 同口径）：档位 1 / 3 / 7 / 30 天 / 永久。
+        avatar_ttl_minutes = 10080,
         download_underlines_and_thoughts = false,
         show_annotations = true,
         max_size_mb = 1024,
@@ -727,6 +732,34 @@ function Settings:set_comment_image_ttl_minutes(n)
     local cache = self:get("cache")
     if type(cache) ~= "table" then cache = {} end
     cache.comment_image_ttl_minutes = n
+    self:set("cache", cache)
+    self:flush()
+end
+
+-- ===== 段评头像缓存有效期（comment_images/a_<user_id>.webp） =====
+-- 与段评图**分开**（v2.16.35）：头像按 user_id 去重、几乎不换；跟着段评图的
+-- 60 分钟走等于每次开段评把同一批小图重下一遍。默认 7 天，0 = 永久。
+-- 🔴 默认值必须与 `fanqie/cover_cache.lua` 的 `AVATAR_TTL_DEFAULT` 一致。
+local AVATAR_TTL_DEFAULT = 10080          -- 7 天
+local AVATAR_TTL_MAX = 43200              -- 30 天（档位菜单同样只给到这一档）
+
+function Settings:get_avatar_ttl_minutes()
+    local cache = self:get("cache")
+    local n = type(cache) == "table" and tonumber(cache.avatar_ttl_minutes) or nil
+    if not n then return AVATAR_TTL_DEFAULT end
+    n = math.floor(n)
+    if n < 0 then n = 0 end
+    if n > AVATAR_TTL_MAX then n = AVATAR_TTL_MAX end
+    return n
+end
+
+function Settings:set_avatar_ttl_minutes(n)
+    n = math.floor(tonumber(n) or AVATAR_TTL_DEFAULT)
+    if n < 0 then n = 0 end
+    if n > AVATAR_TTL_MAX then n = AVATAR_TTL_MAX end
+    local cache = self:get("cache")
+    if type(cache) ~= "table" then cache = {} end
+    cache.avatar_ttl_minutes = n
     self:set("cache", cache)
     self:flush()
 end

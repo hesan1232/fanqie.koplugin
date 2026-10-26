@@ -98,6 +98,21 @@ CoverCache.MIN = 60
 CoverCache.COMMENT_TTL_PRESETS = { 10, 30, 60, 180, 0 }
 CoverCache.COMMENT_TTL_DEFAULT = 60
 
+-- ===== 段评头像（同类目录，`a_<user_id>.webp`）的分钟级有效期 =====
+-- 🔴 与段评图**分开**（v2.16.35）：头像按 user_id 命名、同一个用户在几十条评论里
+--    反复出现，但它几乎不会变（换头像是一年一遇的事件）。跟着段评图的 60 分钟走
+--    等于每次开段评都把这些小图重下一遍 —— 白耗流量，还让首屏多等一轮。
+--    默认 7 天；0 = 永久（头像丢了才会重下）。
+-- 🔴 默认值与 `settings.lua` 的 `AVATAR_TTL_DEFAULT` 同口径（改一处要改两处）。
+CoverCache.AVATAR_TTL_PRESETS = { 1440, 4320, 10080, 43200, 0 }   -- 1/3/7/30 天 / 永久
+CoverCache.AVATAR_TTL_DEFAULT = 10080
+
+--- 这个文件名是头像缓存吗（`a_` 前缀，见 main.lua 的 para_avatar_path）。
+--- 头像与段评图**同目录**，清理时必须按前缀分流，否则长 TTL 会被短 TTL 覆盖。
+function CoverCache.is_avatar_file(name)
+    return type(name) == "string" and name:sub(1, 2) == "a_"
+end
+
 -- 只处理封面会用到的后缀。目录里若混进别的东西（残留的 .part / .tmp / 用户丢的文件），
 -- 一律不碰 —— 清理缓存不是「清空目录」。
 local IMAGE_SUFFIX = {
@@ -320,6 +335,9 @@ end
 function CoverCache.minutes_label(minutes)
     minutes = math.floor(tonumber(minutes) or 0)
     if minutes <= 0 then return _("永久（不失效）") end
+    if minutes % 1440 == 0 then
+        return T(_("%1 天"), tostring(minutes / 1440))
+    end
     if minutes < 60 then return T(_("%1 分钟"), tostring(minutes)) end
     if minutes % 60 == 0 then return T(_("%1 小时"), tostring(minutes / 60)) end
     return T(_("%1 分钟"), tostring(minutes))
@@ -342,36 +360,50 @@ end
 
 --- 清理过期段评图（分钟级）。结构与 `prune` 相同，只是时间单位不同；
 --- 同样只删这一层的图片文件、绝不递归（旁边就是章节缓存与书库）。
+---
+--- 🔴 `avatar_minutes`（v2.16.35）：头像（`a_` 前缀）与段评图**同目录**但 TTL 不同，
+--- 只按 `minutes` 一刀切会把「7 天有效」的头像当 60 分钟的段评图删掉。
+--- 传 nil 时退回旧行为（全部按 `minutes`），老调用点不受影响。
 ---@param dir string 段评图片目录（comment_images）
 ---@param minutes number 0 = 永不失效（直接返回，什么都不删）
 ---@param now number|nil
+---@param avatar_minutes number|nil 头像专用 TTL；nil = 与 minutes 同档
 ---@return table { removed = n, bytes = 释放字节, kept = 保留数, failed = 删失败数 }
-function CoverCache.prune_minutes(dir, minutes, now)
+function CoverCache.prune_minutes(dir, minutes, now, avatar_minutes)
     local out = { removed = 0, bytes = 0, kept = 0, failed = 0 }
     minutes = tonumber(minutes) or 0
-    if minutes <= 0 then return out end
+    avatar_minutes = tonumber(avatar_minutes)
+    -- 两档都为 0（永久）才什么都不做；只关掉其中一档时仍要清另一档。
+    if minutes <= 0 and (avatar_minutes == nil or avatar_minutes <= 0) then return out end
     if type(dir) ~= "string" or dir == "" then return out end
     local ok, iter, dir_obj = pcall(lfs.dir, dir)   -- dir_obj 必须留着，见 stats 上方说明
     if not ok or not iter then return out end
 
     local t = tonumber(now) or os.time()
-    local limit = minutes * CoverCache.MIN
     for name in iter, dir_obj do
         if name ~= "." and name ~= ".." and IMAGE_SUFFIX[CoverCache.suffix(name)] then
-            local path = dir .. "/" .. name
-            local m = CoverCache.mtime(path)
-            if not m then
-                out.kept = out.kept + 1
-            elseif (t - m) >= limit then
-                local size = H.file_size(path) or 0
-                if H.delete_file(path) then
-                    out.removed = out.removed + 1
-                    out.bytes = out.bytes + size
-                else
-                    out.failed = out.failed + 1
-                end
+            local mins = minutes
+            if avatar_minutes and CoverCache.is_avatar_file(name) then
+                mins = avatar_minutes
+            end
+            if mins <= 0 then
+                out.kept = out.kept + 1            -- 这一档是「永久」：留着
             else
-                out.kept = out.kept + 1
+                local path = dir .. "/" .. name
+                local m = CoverCache.mtime(path)
+                if not m then
+                    out.kept = out.kept + 1
+                elseif (t - m) >= mins * CoverCache.MIN then
+                    local size = H.file_size(path) or 0
+                    if H.delete_file(path) then
+                        out.removed = out.removed + 1
+                        out.bytes = out.bytes + size
+                    else
+                        out.failed = out.failed + 1
+                    end
+                else
+                    out.kept = out.kept + 1
+                end
             end
         end
     end
@@ -399,9 +431,15 @@ function CoverCache.maybe_auto_prune_comment_images(settings, dirs, now)
 
     local minutes = tonumber(settings:get_comment_image_ttl_minutes())
         or CoverCache.COMMENT_TTL_DEFAULT
+    -- 头像另一档 TTL（v2.16.35）；取不到 getter 就与段评图同档（老行为）。
+    local avatar_minutes = nil
+    if type(settings.get_avatar_ttl_minutes) == "function" then
+        avatar_minutes = tonumber(settings:get_avatar_ttl_minutes())
+            or CoverCache.AVATAR_TTL_DEFAULT
+    end
     local total = { removed = 0, bytes = 0, kept = 0, failed = 0 }
     for _i, dir in ipairs(dirs or {}) do
-        local r = CoverCache.prune_minutes(dir, minutes, t)
+        local r = CoverCache.prune_minutes(dir, minutes, t, avatar_minutes)
         total.removed = total.removed + r.removed
         total.bytes = total.bytes + r.bytes
         total.kept = total.kept + r.kept

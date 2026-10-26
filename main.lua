@@ -265,7 +265,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.34",
+    version = Info and Info.version or "2.16.35",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -972,16 +972,17 @@ local function fmt_comment_time(raw)
     return ""
 end
 
--- 头衔展示串：「［作家］［次元破壁神］［故事合伙人］」；没有头衔时返回 ""。
+-- 头衔展示串：「［作者］［作家］［次元破壁神］［故事合伙人］」；没有头衔时返回 ""。
 -- 数据由 Comments.titles_of 归一（`fanqie/reading/comments.lua`），这里只管
--- 组装与 i18n：`is_author` 单独补一个「作者」标记（接口的 is_author 与
--- user_title_info 里的「作家」是两回事，实测有 is_author=true 但头衔为空的）。
+-- 组装与 i18n。
+-- 🔴 v2.16.35 起**不再**在这里补「作者」：身份徽标（作者 / 官方 / 小编）与头衔、
+--    粉丝榜、作者赞过、挂件的先后顺序统一由 titles_of 决定（对齐开源阅读书源
+--    `fqCommentTags()` 的优先级），显示层再补一个就会变成「［作者］［作者］」。
 -- ⚠️ 放在「评论头行」之前，4 处头行（顶层/回复 × 主路径/回退路径）共用它，
 --    别只改一处 —— 改动会被 _mutate_paretap.py 的变异抓住。
 local function comment_titles_text(comment)
     if type(comment) ~= "table" then return "" end
     local parts = {}
-    if comment.is_author == true then parts[#parts + 1] = _("作者") end
     local titles = comment.titles
     if type(titles) == "table" then
         for _i, t in ipairs(titles) do
@@ -1245,6 +1246,19 @@ local function comment_image_fresh(plugin, path)
     return CoverCache.is_fresh_minutes(path, s:get_comment_image_ttl_minutes())
 end
 
+--- 头像缓存还能用吗：**与段评图分开的 TTL**（v2.16.35，默认 7 天）。
+--- 头像按 user_id 命名、同一个用户在几十条评论里反复出现，但它几乎不换；跟着
+--- 段评图的 60 分钟走，等于每次开段评都把这批小图重下一遍（白耗流量 + 首屏多等）。
+--- 取不到 getter 时退回段评图那一档（老行为，不会因为缺方法就永不失效）。
+local function avatar_fresh(plugin, path)
+    if not CoverCache then return true end
+    local s = plugin and plugin.settings
+    if not (s and type(s.get_avatar_ttl_minutes) == "function") then
+        return comment_image_fresh(plugin, path)
+    end
+    return CoverCache.is_fresh_minutes(path, s:get_avatar_ttl_minutes())
+end
+
 --- 头像渲染条目（**必须放在 `comment_image_fresh` 之后**：local function 不提升，
 --- 放前面会拿到 nil 直接崩）。
 --- 已缓存且新鲜 → `{ path, w, h }`（真图，等比显示）；
@@ -1264,7 +1278,7 @@ local function comment_avatar_entry(plugin, owner, missing)
         return { letter = letter }
     end
     local path = para_avatar_path(plugin, owner)
-    if H.file_exists(path) and comment_image_fresh(plugin, path) then
+    if H.file_exists(path) and avatar_fresh(plugin, path) then
         local w, h = 0, 0
         if ImgSize then
             local rw, rh = ImgSize.probe(path)
@@ -5416,6 +5430,32 @@ function FanQiePlugin:getCacheMenuItems()
                     callback = function()
                         self.settings:set_comment_image_ttl_minutes(mins)
                         self:showInfo(T(_("评论图片有效期已设为 %1"),
+                            CoverCache and CoverCache.minutes_label(mins) or tostring(mins)))
+                    end,
+                }
+            end
+            return out
+        end,
+    })
+    -- 头像单独一档（v2.16.35）：同一个用户反复出现、头像几乎不换，默认留 7 天；
+    -- 段评图那档默认 60 分钟，两者混用会让头像每次都重下。
+    table.insert(items, {
+        text = _("评论头像有效期"),
+        keep_menu_open = true,
+        sub_item_table_func = function()
+            local out = {}
+            for _i, mins in ipairs(CoverCache and CoverCache.AVATAR_TTL_PRESETS
+                or { 1440, 4320, 10080, 43200, 0 }) do
+                out[#out + 1] = {
+                    text = CoverCache and CoverCache.minutes_label(mins) or tostring(mins),
+                    checked_func = function()
+                        return self.settings.get_avatar_ttl_minutes
+                            and self.settings:get_avatar_ttl_minutes() == mins
+                    end,
+                    keep_menu_open = true,
+                    callback = function()
+                        self.settings:set_avatar_ttl_minutes(mins)
+                        self:showInfo(T(_("评论头像有效期已设为 %1"),
                             CoverCache and CoverCache.minutes_label(mins) or tostring(mins)))
                     end,
                 }
