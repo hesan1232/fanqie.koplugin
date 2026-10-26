@@ -265,7 +265,7 @@ local FanQiePlugin = WidgetContainer:extend{
     name = "fanqie",
     is_doc_only = false,
     fullname = "FanQie",
-    version = Info and Info.version or "2.16.33",
+    version = Info and Info.version or "2.16.34",
 }
 
 -- Check if the active ReaderUI document is the fanqie chapter we opened.
@@ -1209,6 +1209,24 @@ local function para_image_path(plugin, owner, owner_no, img_no, im)
         .. "." .. safe_image_ext(im))
 end
 
+--- 头像缓存路径：**按 user_id 命名**，不是按 comment_id。
+--- 同一个用户在段评里会反复出现（主楼、楼中楼、多个气泡、多条评论），
+--- 按评论命名就是同一张头像下载 N 次；按 user_id 命名天然去重。
+--- 扩展名固定 `webp`：HEIC 已由 `Comments.avatar_entry` 转成 webp URL，
+--- passport 域那些 jpeg/png 的实际内容由 `RenderImage` 按**文件头**嗅探，
+--- 后缀只用于过 `DocumentRegistry` 的扩展名白名单（webp 在白名单里）。
+local function para_avatar_path(plugin, owner)
+    local dir = plugin:_comment_image_dir()
+    local key = tostring(owner.user_id or "")
+    if key == "" or key == "nil" then
+        key = tostring(owner.user_name or "")
+    end
+    if key == "" then key = tostring(owner.comment_id or "anon") end
+    -- user_name 兜底可能带 `/`、`:` 之类的路径字符，一律压平
+    key = key:gsub("[^%w_%-]", "_")
+    return H.join_path(dir, "a_" .. key .. ".webp")
+end
+
 --- 这张图之前下载失败过吗。失败记录挂在当前段评状态上（换段/重开自动失效）。
 local function para_image_failed(plugin, path)
     local st = plugin and plugin._para_view_state
@@ -1225,6 +1243,39 @@ local function comment_image_fresh(plugin, path)
     local s = plugin and plugin.settings
     if not (s and type(s.get_comment_image_ttl_minutes) == "function") then return true end
     return CoverCache.is_fresh_minutes(path, s:get_comment_image_ttl_minutes())
+end
+
+--- 头像渲染条目（**必须放在 `comment_image_fresh` 之后**：local function 不提升，
+--- 放前面会拿到 nil 直接崩）。
+--- 已缓存且新鲜 → `{ path, w, h }`（真图，等比显示）；
+--- 否则 → `{ letter }` 首字占位，并把下载任务塞进 `missing`（与正文图同一套预取）。
+--- 没有头像 / 转不了（白名单外的 passport 域 + 真 HEIC）→ 只给首字，不报错：
+--- 头像缺失不该在评论区里刷一行「图片无法显示」。
+local function comment_avatar_entry(plugin, owner, missing)
+    local name = tostring(owner.user_name or "")
+    local letter = "·"
+    if name ~= "" and util and util.splitToChars then
+        local chars = util.splitToChars(name)
+        if chars and chars[1] then letter = chars[1] end
+    end
+    local ok_c, Comments = pcall(require, "fanqie.reading.comments")
+    local entry = (ok_c and Comments.avatar_entry) and Comments.avatar_entry(owner.avatar) or nil
+    if not entry or not entry.displayable then
+        return { letter = letter }
+    end
+    local path = para_avatar_path(plugin, owner)
+    if H.file_exists(path) and comment_image_fresh(plugin, path) then
+        local w, h = 0, 0
+        if ImgSize then
+            local rw, rh = ImgSize.probe(path)
+            if rw and rh then w, h = rw, rh end
+        end
+        return { path = path, w = w, h = h }
+    end
+    if missing then
+        missing[#missing + 1] = { path = path, im = entry, is_avatar = true }
+    end
+    return { letter = letter }
 end
 
 -- 渲染块的图片条目：已下载→内嵌；未下载→「加载中」占位；不可显示→显式说明。
@@ -1622,6 +1673,9 @@ function FanQiePlugin:_renderParaReviewView(in_place)
 
         local imgs, missing = view_image_entries(self, comment, i, true)
         for _k, m in ipairs(missing) do all_missing[#all_missing + 1] = m end
+        -- 头像（v2.16.34）：与正文图共用预取管线。按 user_id 缓存 ⇒ 同一用户
+        -- 在段评里出现 N 次只下一次；未缓存时先给首字占位。
+        local avatar = comment_avatar_entry(self, comment, all_missing)
 
         local rc, more, reply_missing
         if expanded then
@@ -1666,6 +1720,7 @@ function FanQiePlugin:_renderParaReviewView(in_place)
             head = head,
             foot = foot,
             fold = fold,
+            avatar = avatar,
             text = tostring(comment.text or ""),
             images = imgs,
             replies = rc,

@@ -1,16 +1,16 @@
 {
-  "version": "2.16.33",
-  "name": "番茄小说 2.16.33",
+  "version": "2.16.34",
+  "name": "番茄小说 2.16.34",
   "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.33/fanqie.koplugin.zip",
+  "package_url": "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.34/fanqie.koplugin.zip",
   "package_urls": [
-    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.33/fanqie.koplugin.zip",
-    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.33/fanqie.koplugin.zip",
-    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.33/fanqie.koplugin.zip",
-    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.33/fanqie.koplugin.zip"
+    "https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.34/fanqie.koplugin.zip",
+    "https://ghfast.top/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.34/fanqie.koplugin.zip",
+    "https://gh-proxy.com/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.34/fanqie.koplugin.zip",
+    "https://ghproxy.net/https://github.com/hesan1232/fanqie.koplugin/releases/download/v2.16.34/fanqie.koplugin.zip"
   ],
-  "size": 1050581,
-  "sha256": "f7dbd2fda802e1d5322c3b6467fe22964c0d9ac8138052b429883954f070d75a",
-  "notes": "- **书城直达推荐榜**：点开书城直接进推荐榜列表；顶部 tab 收敛为最近更新 / 推荐榜 / 巅峰榜三个网页榜，原地切换。\n- **二级分类整链下线**：书库分类浏览（book_list/v0 全套排序/状态/分类/性别筛选）与原创榜两级分类（rank/category/list）删除，书城收敛为「榜单 + 搜索」两条路。\n- **榜单分「小说 / 出版」两大类**：小说 11 榜（推荐/完本/追更/黑马/巅峰/阅读/口碑/高分/人气/热评/热搜）、出版 6 榜（推荐/阅读/名著/收藏/新书/典藏），另有礼物榜 4 榜；选择器带分组分隔头，短组弹小窗、长组开全屏。\n- **段评默认排序改「智能热门」**：APK UgcSortEnum 只有 1=SmartHot（App 默认）/ 2=时间正序 / 3=时间倒序，旧默认 0 是 web 语义，缺省改传 1。\n- **书架进度不再信 index**：progress 接口的 index 不是章序（实测 89 条里 74 条恒 0、同书还会漂移）——书架/详情页的进度与「剩余未读」改用 real_chapter_order + read_progress（万分比整书进度）估算，修「有阅读进度却显示 0% / 整本未读」。\n- **书籍详情新增「相关推荐」**：走 App 的 /reading/reader/recommend/book/（匿名可用、offset 真分页），条目点开递归进该书详情，尾部「换一批」。\n- **操作框瘦身**：随书库链路下线，排序/状态/分类/性别筛选一并移除，操作框只剩加载更多 / 显示方式 / 重新加载 / 搜索。"
+  "size": 1053655,
+  "sha256": "5498751866a55f546e5d406c2ce14acb22d38b36afb819a3454c9a13dcb6d2bd",
+  "notes": "- **段评显示头像**：每条评论左侧 26px 头像（真图按原比例），未下载 / 转不了时显示首字占位（不留空白格）；头像按用户缓存（a_<uid>.webp），同一个人在主楼、楼中楼、多个气泡里反复出现只下一次；回复块不带头像。\n- **头像 HEIC 同走服务端转码**：换 host + 公共模板，宽度 144（约 1.7 KB）。用户头像 = 签名 host + 私有模板（只换后缀会 403），默认头像 = img/novel-static（只换后缀即可）。\n- **动图只显示第一帧**：GIF / 动画 WebP 正常渲染但不动（ImageWidget 固定 want_frames=false，KOReader 既定行为）。\n- **书城直达推荐榜**：点开书城直接进推荐榜列表；顶部 tab 收敛为最近更新 / 推荐榜 / 巅峰榜三个网页榜，原地切换。\n- **二级分类整链下线**：书库分类浏览（book_list/v0 全套排序/状态/分类/性别筛选）与原创榜两级分类（rank/category/list）删除，书城收敛为「榜单 + 搜索」两条路。\n- **榜单分「小说 / 出版」两大类**：小说 11 榜（推荐/完本/追更/黑马/巅峰/阅读/口碑/高分/人气/热评/热搜）、出版 6 榜（推荐/阅读/名著/收藏/新书/典藏），另有礼物榜 4 榜；选择器带分组分隔头，短组弹小窗、长组开全屏。\n- **段评默认排序改「智能热门」**：APK UgcSortEnum 只有 1=SmartHot / 2=时间正序 / 3=时间倒序，旧默认 0 是 web 语义，缺省改传 1。\n- **书架进度不再信 index**：progress 接口的 index 不是章序（实测 89 条里 74 条恒 0、同书还会漂移），改用 real_chapter_order + read_progress（万分比整书进度）估算。\n- **书籍详情新增「相关推荐」**：走 App 的 reader/recommend/book（匿名可用、offset 真分页），条目递归开该书详情，尾部「换一批」。\n- **操作框瘦身**：随书库链路下线，排序/状态/分类/性别筛选一并移除，只剩加载更多 / 显示方式 / 重新加载 / 搜索。"
 }

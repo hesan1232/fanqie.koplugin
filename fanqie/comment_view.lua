@@ -62,6 +62,8 @@ local EmojiFont = require("fanqie.emoji_font")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
+local HorizontalGroup = require("ui/widget/horizontalgroup")
+local HorizontalSpan = require("ui/widget/horizontalspan")
 local ImageWidget = require("ui/widget/imagewidget")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local LineWidget = require("ui/widget/linewidget")
@@ -107,6 +109,12 @@ local CommentView = InputContainer:extend{
 -- 图片内嵌显示的最大宽度比例（相对内容宽）：段评图通常是小图（240px 级），
 -- 原尺寸即可；超过内容宽的等比压到内容宽的 70%。
 local IMAGE_MAX_WIDTH_RATIO = 0.7
+
+-- 头像显示边长（**逻辑值**）：26 与 head 行字号（16~18pt）大致同高，一行放得下；
+-- 墨水屏上再大会把「序号 + 名字 + 头衔」挤成两行。main.lua 下载按 144px 请求。
+local AVATAR_SIZE = 26
+-- 头像与文字之间的横向间隙
+local AVATAR_GAP = 6
 
 -- 字号（**逻辑值**，不是物理像素）。
 -- 🔴 `Font:getFace(name, size)` 内部自己会做一次 `Screen:scaleBySize(size)`，所以这里
@@ -212,6 +220,47 @@ function CommentView:_fonts()
     return self._font_head, self._font_body, self._font_note
 end
 
+--- 头像控件：已下载 → ImageWidget（真实宽高等比，长边压到 box）；
+--- 未下载 / 下载失败 → **首字占位**（灰字居中，不留空白格）。
+--- `av` 由 main.lua 组装：`{ path, w, h }`（已缓存）或 `{ letter = "爱" }`（占位）。
+--- 占位用首字而不是空框：墨水屏上空白小方块看着像渲染错误。
+function CommentView:_avatar_widget(av, box, font_head)
+    if type(av) ~= "table" then return nil end
+    if type(av.path) == "string" and av.path ~= "" then
+        local w = tonumber(av.w) or 0
+        local h = tonumber(av.h) or 0
+        if w > 0 and h > 0 then
+            local dw = math.min(w, box)
+            local dh = math.floor(h * dw / w + 0.5)
+            return ImageWidget:new{
+                file = av.path,
+                width = dw,
+                height = dh,
+                -- 同正文图：不加 alpha 会把透明区画成黑块
+                alpha = true,
+                file_do_cache = true,
+            }
+        end
+        return ImageWidget:new{
+            file = av.path,
+            width = box,
+            height = box,
+            scale_factor = 0,
+            alpha = true,
+            file_do_cache = true,
+        }
+    end
+    return TextBoxWidget:new{
+        text = tostring(av.letter or "·"),
+        face = Font:getFace("smallinfofont", font_head),
+        width = box,
+        alignment = "center",
+        -- 占位是**信息**不是内容 ⇒ 用 DARK_GRAY（本文件只允许 BLACK / DARK_GRAY：
+        -- 夜间模式靠整屏反色，写死白色会反成黑字看不见）。
+        fgcolor = Blitbuffer.COLOR_DARK_GRAY,
+    }
+end
+
 --- 单块渲染：头行 + 正文 + 图片（回复块的缩进由外层加左垫片）。
 --- `block.tap` 存在时，「头行 + 正文」整体包成**可点行**（点一下展开/收起该条回复）；
 --- `im.tap` 存在时，**该张图**（或其「正在后台加载…」占位行）单独包成可点行
@@ -221,16 +270,23 @@ function CommentView:_append_block(group, block, content_w, indent)
     if type(block) ~= "table" then return end
     -- 三档字号从实例上取（按阅读字号折算，见文件头 font_sizes）
     local FONT_HEAD, FONT_BODY, FONT_NOTE = self:_fonts()
+    -- 头像只在**顶层评论**出现：回复块本身已左缩进 18px，再加头像会把
+    -- 「↳ 名字 · ♥3」挤成两行（App 里回复也不带头像）。
+    local avatar_w = (not indent and type(block.avatar) == "table")
+        and Screen:scaleBySize(AVATAR_SIZE) or 0
+    local avatar_gap = avatar_w > 0 and Screen:scaleBySize(AVATAR_GAP) or 0
     local text_w = content_w - (indent and Screen:scaleBySize(18) or 0)
+        - avatar_w - avatar_gap
 
     if indent then
         group[#group + 1] = VerticalSpan:new{ width = Screen:scaleBySize(4) }
     end
 
     local inner = VerticalGroup:new{ align = "left" }
-    -- tap 目标 = 头行 + 正文；不可点时直接写进 inner（少一层容器）
+    -- tap 目标 = 头行 + 正文；不可点且无头像时直接写进 inner（少一层容器）
+    local tappable = (not indent and block.tap ~= nil and self.on_block_tap ~= nil)
     local body = inner
-    if not indent and block.tap ~= nil and self.on_block_tap ~= nil then
+    if tappable or avatar_w > 0 then
         body = VerticalGroup:new{ align = "left" }
     end
 
@@ -263,8 +319,31 @@ function CommentView:_append_block(group, block, content_w, indent)
         }
     end
 
-    if body ~= inner then
-        inner[#inner + 1] = self:_wrap_tappable(body, block.tap, self.on_block_tap)
+    -- 头行 + 正文（有头像时与头像**并排**）
+    -- 🔴 align 必须是 "top"：HorizontalGroup 只认 center/top/bottom —— 写 "left"
+    --    会落进 else 分支，**只打一行 stderr 什么都不画**（下面回复缩进那段
+    --    就是这个坑的完整记录，别重犯）。
+    local head_row = body
+    if avatar_w > 0 then
+        local av = self:_avatar_widget(block.avatar, avatar_w, FONT_HEAD)
+        if av then
+            -- 真头像也往屏幕上画了图 ⇒ 同样要计入「关窗全刷」的判据
+            -- （只有真 ImageWidget 才置；首字占位是灰字，不会留残影）
+            if type(block.avatar.path) == "string" and block.avatar.path ~= "" then
+                self._has_images = true
+            end
+            head_row = HorizontalGroup:new{
+                align = "top",
+                av,
+                HorizontalSpan:new{ width = avatar_gap },
+                body,
+            }
+        end
+    end
+    if tappable then
+        inner[#inner + 1] = self:_wrap_tappable(head_row, block.tap, self.on_block_tap)
+    elseif head_row ~= inner then
+        inner[#inner + 1] = head_row
     end
 
     -- 内嵌图片 / 加载中占位 / 不可显示提示
@@ -382,8 +461,7 @@ function CommentView:_append_block(group, block, content_w, indent)
         --    「评论能出来、回复只有一大块空白」的全部根因 —— 回复块占了位、
         --    一个像素都没画。stderr 警告只进 KOReader 自身日志，fanqie.log 看不到，
         --    设备侧零报错（回归桩当时照画不误 ⇒ 假绿了一路）。
-        local HorizontalGroup = require("ui/widget/horizontalgroup")
-        local HorizontalSpan = require("ui/widget/horizontalspan")
+        -- HorizontalGroup / HorizontalSpan 已在文件顶部 require（v2.16.34）
         group[#group + 1] = HorizontalGroup:new{
             align = "top",
             HorizontalSpan:new{ width = Screen:scaleBySize(18) },
@@ -396,8 +474,6 @@ end
 
 --- 全量内容：评论块序列 + 块间分隔线。
 function CommentView:_build_content(content_w)
-    local HorizontalGroup = require("ui/widget/horizontalgroup")
-    local HorizontalSpan = require("ui/widget/horizontalspan")
     local FONT_BODY, FONT_NOTE = select(2, self:_fonts())
     local group = VerticalGroup:new{ align = "left" }
     local first = true

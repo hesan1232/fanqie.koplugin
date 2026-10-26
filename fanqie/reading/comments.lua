@@ -662,6 +662,50 @@ function Comments.normalize_images(images)
     return out
 end
 
+-- ---------------------------------------------------------------------------
+-- 头像：同一套「不可显示就换服务端转码」的规则，但**尺寸另算**
+-- ---------------------------------------------------------------------------
+-- 实测（2026-10-26，`.workbuddy/tools/_probe_avatar_heic.py` / `_probe_comment_img_coverage.py`）：
+--   · 真实用户头像多是**签名 host + 私有模板**，后缀 `.heic`
+--     （`p9-reading-sign.fqnovelpic.com/tos-cn-i-1yzifmftcy/<id>~tplv-s85hriknmn-jpeg-v1:144:0.heic?签名`）
+--     ⇒ 必须换 host + 公共模板，与正文图同一条路；
+--   · 默认/公共头像走 `p3-novel.byteimg.com/img/novel-static/<id>~tplv-1yzifmftcy-expand:200:0:0.heic`
+--     （本来就无签名 + 公共模板），换模板同样 200；
+--   · 还有一类 passport 域（`p9-passport.byteacctimg.com` 的 `.image`、
+--     `p-passport-sign.bytedance.net` 的 `.jpeg`）——**白名单外、也本来就不是 HEIC**
+--     （实测 `.image` 返回 PNG）⇒ to_webp_url 返回 nil，按原 URL 下载即可。
+--   · 覆盖率（3 份真实抓包，120 个头像）：116 个可转，4 个是 passport 域（无需转）。
+--- 头像请求宽度。144 实测 1.7 KB（200 时 2.7 KB）——段评里按 26 逻辑像素渲染，
+--- 144 已足够，且比正文图的 800 省一个数量级的流量。
+local AVATAR_WIDTH = 144
+
+--- 头像 URL 归一。字段口径与 `normalize_images` 的单项**完全一致**，
+--- 便于 main.lua 用同一套下载/缓存代码（`fetch_url or url`、`format` 决定扩展名）。
+---@param url string|nil 服务端给的 user_avatar
+---@return table|nil entry { url, fetch_url, width, height, image_type, format, converted, displayable }
+function Comments.avatar_entry(url)
+    if type(url) ~= "string" or url == "" then return nil end
+    local ext = image_ext(url)
+    local unsupported = (ext and IMAGE_EXT_UNSUPPORTED[ext] == true) or false
+    local fetch_url, fmt, converted = url, ext, false
+    if unsupported then
+        local conv = Comments.to_webp_url(url, AVATAR_WIDTH)
+        if conv then
+            fetch_url, fmt, converted = conv, "webp", true
+        end
+    end
+    return {
+        url = url,
+        fetch_url = fetch_url,
+        width = AVATAR_WIDTH,
+        height = AVATAR_WIDTH,
+        image_type = nil,
+        format = fmt,
+        converted = converted,
+        displayable = (not unsupported) or converted,
+    }
+end
+
 Comments.TIMEOUT = TIMEOUT
 Comments.COMMENT_MAX_COUNT = COMMENT_MAX_COUNT
 Comments.REPLY_MAX_COUNT = REPLY_MAX_COUNT
